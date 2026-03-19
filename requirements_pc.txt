@@ -1,0 +1,40 @@
+# ============================================================
+# requirements_pc.txt — Windows/Linux + NVIDIA GPU (RTX 4060 Ti 8GB)
+# ============================================================
+#
+# [사전 설치 필수]
+# 1. NVIDIA 드라이버 최신 버전 (https://www.nvidia.com/drivers)
+# 2. CUDA Toolkit 12.4 이상
+# 3. ffmpeg (PATH 등록 필요)
+#    Windows: winget install ffmpeg  또는  choco install ffmpeg
+#    Linux  : sudo apt install ffmpeg
+#
+# [PyTorch 설치 — 반드시 먼저 단독으로 설치]
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+#
+# [나머지 패키지 설치]
+# pip install -r requirements_pc.txt
+# ============================================================
+
+# ── STT ─────────────────────────────────────────────────────
+faster-whisper>=1.1.0
+
+# ── LLM (4-bit 양자화) ───────────────────────────────────────
+transformers>=4.47.0
+accelerate>=0.34.0
+bitsandbytes>=0.44.1        # CUDA 4-bit 양자화 (NF4)
+sentencepiece>=0.2.0        # Qwen 토크나이저
+
+# ── TTS ─────────────────────────────────────────────────────
+f5-tts>=1.0.0
+
+# ── 오디오 처리 ──────────────────────────────────────────────
+librosa>=0.10.2
+soundfile>=0.12.1
+numpy<2.0                   # librosa 호환성 (numpy 2.x 미지원)
+
+# ── 임베딩 + 벡터 DB ─────────────────────────────────────────
+chromadb>=0.5.0
+
+# ── 유틸리티 ────────────────────────────────────────────────
+tqdm>=4.67.0

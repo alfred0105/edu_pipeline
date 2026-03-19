@@ -1,0 +1,42 @@
+# ============================================================
+# requirements_mac.txt — macOS + Apple Silicon (M1/M2/M3, 64GB)
+# ============================================================
+#
+# [사전 설치 필수]
+# 1. Homebrew (https://brew.sh)
+# 2. ffmpeg: brew install ffmpeg
+# 3. Python 3.11+ (brew install python@3.11)
+#
+# [가상 환경 생성 및 설치]
+# python3 -m venv .venv
+# source .venv/bin/activate
+# pip install -r requirements_mac.txt
+#
+# [환경 변수]
+# export EDU_PIPELINE_MODE=mac  (기본값: 시스템 자동 감지)
+# ============================================================
+
+# ── STT ─────────────────────────────────────────────────────
+faster-whisper>=1.1.0
+
+# ── LLM (MLX 프레임워크) ─────────────────────────────────────
+mlx>=0.22.0                 # Apple Silicon 최적화 프레임워크
+mlx-lm>=0.20.0              # MLX 기반 LLM 추론 (Qwen2.5 지원)
+transformers>=4.47.0        # 토크나이저용 (모델 추론은 mlx-lm 사용)
+accelerate>=0.34.0
+sentencepiece>=0.2.0
+# bitsandbytes 미설치 (macOS 미지원, mlx가 양자화 자체 처리)
+
+# ── TTS ─────────────────────────────────────────────────────
+f5-tts>=1.0.0
+
+# ── 오디오 처리 ──────────────────────────────────────────────
+librosa>=0.10.2
+soundfile>=0.12.1
+numpy<2.0
+
+# ── 임베딩 + 벡터 DB ─────────────────────────────────────────
+chromadb>=0.5.0
+
+# ── 유틸리티 ────────────────────────────────────────────────
+tqdm>=4.67.0
