@@ -97,6 +97,43 @@ def mix_dubbed_into_video(
     return output_path
 
 
+def extract_ref_clip(
+    video_path: str,
+    output_path: str,
+    segments: list[dict],
+    target_duration: float = 10.0,
+) -> tuple[str, str] | None:
+    """
+    STT 세그먼트 중 화자 클로닝에 적합한 구간을 찾아 WAV로 추출합니다.
+
+    조건: 5~15초 길이, 텍스트 길이 15자 이상인 세그먼트 중 가장 긴 것 선택
+
+    Returns:
+        (output_path, ref_text) 또는 실패 시 None
+    """
+    candidates = [
+        s for s in segments
+        if 5.0 <= (s["end"] - s["start"]) <= 15.0 and len(s["text"]) >= 15
+    ]
+    if not candidates:
+        return None
+
+    best = max(candidates, key=lambda s: s["end"] - s["start"])
+    start, end = best["start"], best["end"]
+    ref_text = best["text"]
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    _run([
+        "ffmpeg", "-y", "-i", video_path,
+        "-ss", str(start), "-to", str(end),
+        "-vn", "-acodec", "pcm_s16le",
+        "-ar", "24000", "-ac", "1",
+        output_path,
+    ], label="extract_ref_clip")
+    logger.info(f"[Audio] 화자 참조 클립 추출: {start:.1f}s~{end:.1f}s  '{ref_text[:40]}'")
+    return output_path, ref_text
+
+
 # ── SRT 자막 내보내기 ───────────────────────────────────────────────────────
 
 def _fmt_srt_time(secs: float) -> str:

@@ -76,7 +76,6 @@ def _infer_pc(tokenizer, model, prompt: str, max_tokens: int) -> str:
             **inputs,
             max_new_tokens=max_tokens,
             do_sample=False,
-            temperature=cfg.llm.temperature,
             pad_token_id=tokenizer.eos_token_id,
         )
     generated = out[0][inputs["input_ids"].shape[1]:]
@@ -140,14 +139,39 @@ class LLMProcessor:
         self,
         segments: list[dict],
         target_lang: str = "ko",
+        batch_size: int = 10,
     ) -> list[dict]:
-        """모든 세그먼트를 번역합니다."""
+        """세그먼트를 batch_size개씩 묶어 한 번에 번역합니다."""
+        import re
+        lang_name = LANG_NAMES.get(target_lang, target_lang)
         result = []
         total = len(segments)
-        for i, seg in enumerate(segments):
-            logger.debug(f"[LLM] 번역 중 {i + 1}/{total}: {seg['text'][:50]}")
-            translated = self.translate(seg["text"], target_lang)
-            result.append({**seg, "translated": translated})
+
+        for batch_start in range(0, total, batch_size):
+            batch = segments[batch_start:batch_start + batch_size]
+            n = len(batch)
+            numbered = "\n".join(f"{i + 1}. {seg['text']}" for i, seg in enumerate(batch))
+            prompt = (
+                f"아래 {n}개의 문장을 각각 자연스러운 {lang_name}로 번역하세요.\n"
+                "반드시 '번호. 번역문' 형식으로만 출력하세요. 다른 내용은 출력하지 마세요.\n\n"
+                f"{numbered}"
+            )
+            logger.info(f"[LLM] 번역 배치 {batch_start // batch_size + 1}/"
+                        f"{(total + batch_size - 1) // batch_size}  ({n}개)")
+
+            raw = self._infer(prompt, 256 * n)
+
+            # 번호 파싱
+            parsed = {}
+            for m in re.finditer(r"(\d+)\.\s*(.+?)(?=\n\d+\.|$)", raw, re.DOTALL):
+                idx = int(m.group(1)) - 1
+                if 0 <= idx < n:
+                    parsed[idx] = m.group(2).strip()
+
+            for i, seg in enumerate(batch):
+                translated = parsed.get(i, seg["text"])  # 파싱 실패 시 원문 사용
+                result.append({**seg, "translated": translated})
+
         logger.info(f"[LLM] 번역 완료: {total}개 세그먼트")
         return result
 

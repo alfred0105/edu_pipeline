@@ -66,9 +66,9 @@ def transcribe(
         audio_path,
         language=language,
         initial_prompt=initial_prompt,
-        beam_size=cfg.stt.beam_size,
-        best_of=5,
-        word_timestamps=True,
+        beam_size=3,
+        best_of=1,
+        word_timestamps=False,
         vad_filter=cfg.stt.vad_filter,
         vad_parameters={
             "min_silence_duration_ms": 300,

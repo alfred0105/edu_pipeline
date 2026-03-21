@@ -121,10 +121,23 @@ def run_pipeline(args: argparse.Namespace) -> None:
     if not args.skip_tts:
         logger.info("━━━ STEP 4: TTS (AI 더빙) ━━━")
         from modules.tts import TTSProcessor
+        from utils.audio import extract_ref_clip
+
+        ref_audio = args.ref_audio
+        ref_text  = args.ref_text
+
+        if not ref_audio:
+            ref_clip_path = str(out_dir / "ref_clip.wav")
+            result = extract_ref_clip(video_path, ref_clip_path, segments)
+            if result:
+                ref_audio, ref_text = result
+                logger.info(f"[TTS] 자동 화자 추출 성공: {ref_audio}")
+            else:
+                logger.warning("[TTS] 화자 추출 실패 — 기본 화자 사용")
 
         tts = TTSProcessor(
-            ref_audio_path=args.ref_audio,
-            ref_text=args.ref_text,
+            ref_audio_path=ref_audio,
+            ref_text=ref_text,
         )
         tts_dir  = str(out_dir / "tts_segments")
         segments = tts.synthesize_all(segments, tts_dir, use_translated=True)

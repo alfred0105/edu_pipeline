@@ -34,6 +34,17 @@ _SYSTEM_PROMPT = """당신은 교육 영상 내용만을 바탕으로 질문에 
 _NO_CONTEXT_REPLY = "제공된 영상 내용에서 해당 정보를 찾을 수 없습니다."
 
 
+def _sanitize_name(name: str) -> str:
+    """ChromaDB 컬렉션 이름에 사용 불가한 문자를 제거합니다."""
+    import re, hashlib
+    sanitized = re.sub(r"[^a-zA-Z0-9._-]", "_", name)
+    sanitized = re.sub(r"^[^a-zA-Z0-9]+", "", sanitized)
+    sanitized = re.sub(r"[^a-zA-Z0-9]+$", "", sanitized)
+    if len(sanitized) < 3:
+        sanitized = "col" + hashlib.md5(name.encode()).hexdigest()[:8]
+    return sanitized[:512]
+
+
 def _fmt_timestamp(secs: float) -> str:
     m = int(secs // 60)
     s = int(secs % 60)
@@ -59,7 +70,7 @@ class RAGChatbot:
 
         self._client = chromadb.PersistentClient(path=db_path)
         self._collection = self._client.get_or_create_collection(
-            name=f"{cfg.rag.collection_prefix}{collection_name}",
+            name=_sanitize_name(f"{cfg.rag.collection_prefix}{collection_name}"),
             metadata={"hnsw:space": "cosine"},
         )
         logger.info(

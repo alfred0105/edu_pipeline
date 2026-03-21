@@ -36,10 +36,13 @@ def stretch_audio_to_duration(
         min_ratio:        최소 스트레칭 비율 (이보다 느려지면 패딩으로 보완)
         max_ratio:        최대 스트레칭 비율 (이보다 빨라지면 클램프 후 패딩)
     """
-    import librosa
     import soundfile as sf
+    import librosa
 
-    y, file_sr = librosa.load(input_path, sr=sr)
+    y, file_sr = sf.read(input_path)
+    y = y.astype(np.float32)
+    if file_sr != sr:
+        y = librosa.resample(y, orig_sr=file_sr, target_sr=sr)
     actual_duration = len(y) / sr
 
     # 무음 세그먼트 처리
@@ -66,7 +69,7 @@ def stretch_audio_to_duration(
         )
 
     # librosa phase vocoder 스트레칭 (rate = 1/ratio: >1이면 빠르게, <1이면 느리게)
-    stretched = librosa.effects.time_stretch(y, rate=1.0 / clamped)
+    stretched = librosa.effects.time_stretch(y, rate=1.0 / clamped, n_fft=512)
 
     # 샘플 수 정확히 맞추기 (무음 패딩 or 트리밍)
     target_samples = int(sr * target_duration)
@@ -103,8 +106,8 @@ def merge_dubbed_audio(
         output_path:    최종 WAV 출력 경로
         sr:             샘플레이트
     """
-    import librosa
     import soundfile as sf
+    import librosa
 
     total_samples = int(sr * total_duration)
     merged = np.zeros(total_samples, dtype=np.float32)
@@ -115,7 +118,10 @@ def merge_dubbed_audio(
         if not tts_path:
             continue
         try:
-            y, file_sr = librosa.load(tts_path, sr=sr)
+            y, file_sr = sf.read(tts_path)
+            y = y.astype(np.float32)
+            if file_sr != sr:
+                y = librosa.resample(y, orig_sr=file_sr, target_sr=sr)
         except Exception as e:
             logger.warning(f"[Sync] 세그먼트 로드 실패 ({tts_path}): {e}")
             continue
