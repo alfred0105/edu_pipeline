@@ -46,8 +46,12 @@ def _sanitize_name(name: str) -> str:
 
 
 def _fmt_timestamp(secs: float) -> str:
-    m = int(secs // 60)
+    """초 → 사람이 읽을 수 있는 타임스탬프 (1시간 이상 지원)"""
+    h = int(secs // 3600)
+    m = int((secs % 3600) // 60)
     s = int(secs % 60)
+    if h > 0:
+        return f"{h:02d}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
 
 
@@ -83,18 +87,28 @@ class RAGChatbot:
         self._embedder = None
         self._llm      = None
 
-    # ── Lazy 로드 ────────────────────────────────────────────────────────
+    # ── Lazy 로드 + VRAM 관리 ──────────────────────────────────────────────
     def _get_embedder(self):
         if self._embedder is None:
             from modules.embedder import EmbeddingProcessor
             self._embedder = EmbeddingProcessor()
         return self._embedder
 
+    def _release_embedder(self):
+        if self._embedder is not None:
+            self._embedder.unload()
+            self._embedder = None
+
     def _get_llm(self):
         if self._llm is None:
             from modules.llm import LLMProcessor
             self._llm = LLMProcessor()
         return self._llm
+
+    def _release_llm(self):
+        if self._llm is not None:
+            self._llm.unload()
+            self._llm = None
 
     # ── 인덱싱 ──────────────────────────────────────────────────────────
     def index_segments(self, segments: list[dict]) -> None:
@@ -147,7 +161,7 @@ class RAGChatbot:
             return []
 
         embedder = self._get_embedder()
-        q_vec    = embedder.embed([question])[0]
+        q_vec    = embedder.embed([question], task="query")[0]
 
         results = self._collection.query(
             query_embeddings=[q_vec],
@@ -162,7 +176,6 @@ class RAGChatbot:
             results["distances"][0],
         ):
             if dist > cfg.rag.distance_threshold:
-                # 관련성이 낮은 청크 제외 → Hallucination 방지 핵심
                 logger.debug(f"[RAG] 청크 제외 (dist={dist:.3f} > {cfg.rag.distance_threshold}): {doc[:40]}")
                 continue
             chunks.append({"doc": doc, "meta": meta, "dist": dist})
@@ -174,10 +187,12 @@ class RAGChatbot:
         """
         질문에 답합니다. 관련 청크가 없으면 "정보 없음" 문장을 반환합니다.
 
-        Returns:
-            LLM이 생성한 답변 문자열
+        8GB VRAM 보호: 임베딩 완료 → embedder 해제 → LLM 로드 → 답변 생성
         """
         chunks = self._retrieve(question)
+
+        # 검색 완료 → embedder VRAM 해제 (LLM이 메모리를 쓸 수 있도록)
+        self._release_embedder()
 
         if not chunks:
             logger.info(f"[RAG] 관련 청크 없음 → 고정 응답 반환")
@@ -198,9 +213,8 @@ class RAGChatbot:
         )
 
         llm    = self._get_llm()
-        answer = llm._infer(prompt, 512)
+        answer = llm.generate(prompt, 512)
 
-        # 모델이 _NO_CONTEXT_REPLY를 무시하고 지어낸 경우 방어
         if not answer.strip():
             return _NO_CONTEXT_REPLY
 
@@ -229,3 +243,6 @@ class RAGChatbot:
 
             answer = self.query(question)
             print(f"\n답변 > {answer}\n")
+
+            # 답변 후 LLM 해제 → 다음 질문의 embedding 여유 확보
+            self._release_llm()

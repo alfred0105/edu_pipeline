@@ -7,13 +7,29 @@ ffmpeg 바이너리가 PATH에 설치되어 있어야 합니다.
 
 import json
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# TTS 기본 샘플레이트 (F5-TTS = 24 kHz)
+_TTS_SAMPLE_RATE = 24_000
+
 
 # ── ffmpeg 헬퍼 ────────────────────────────────────────────────────────────
+
+def check_ffmpeg() -> None:
+    """ffmpeg/ffprobe 설치 여부를 확인합니다. 미설치 시 안내 메시지와 함께 종료."""
+    for binary in ("ffmpeg", "ffprobe"):
+        if shutil.which(binary) is None:
+            raise FileNotFoundError(
+                f"'{binary}'를 찾을 수 없습니다. 설치 후 PATH에 등록하세요.\n"
+                "  Windows: winget install ffmpeg  또는  choco install ffmpeg\n"
+                "  Mac:     brew install ffmpeg\n"
+                "  Linux:   sudo apt install ffmpeg"
+            )
+
 
 def _run(cmd: list[str], label: str = "ffmpeg") -> None:
     """subprocess 실행 후 실패 시 상세 오류를 출력합니다."""
@@ -41,6 +57,7 @@ def extract_audio(video_path: str, output_path: str, sample_rate: int = 16000) -
         "-acodec", "pcm_s16le",
         "-ar", str(sample_rate),
         "-ac", "1",
+        "-threads", "0",
         output_path,
     ], label="extract_audio")
     logger.info(f"[Audio] 오디오 추출 완료: {output_path}")
@@ -91,6 +108,7 @@ def mix_dubbed_into_video(
         "-map", "[aout]",
         "-c:v", "copy",
         "-c:a", "aac", "-b:a", "192k",
+        "-threads", "0",
         output_path,
     ], label="mix_dubbed")
     logger.info(f"[Audio] 더빙 영상 저장: {output_path}")
@@ -127,7 +145,7 @@ def extract_ref_clip(
         "ffmpeg", "-y", "-i", video_path,
         "-ss", str(start), "-to", str(end),
         "-vn", "-acodec", "pcm_s16le",
-        "-ar", "24000", "-ac", "1",
+        "-ar", str(_TTS_SAMPLE_RATE), "-ac", "1",
         output_path,
     ], label="extract_ref_clip")
     logger.info(f"[Audio] 화자 참조 클립 추출: {start:.1f}s~{end:.1f}s  '{ref_text[:40]}'")

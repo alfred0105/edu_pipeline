@@ -18,6 +18,12 @@ from utils.memory import clear_vram, log_vram
 
 logger = logging.getLogger(__name__)
 
+# Qwen3-Embedding task instruction prefix (인덱싱 vs 검색 구분)
+_TASK_INSTRUCTIONS = {
+    "passage": "Instruct: Represent this educational content for retrieval\n",
+    "query":   "Instruct: Retrieve relevant educational content\n",
+}
+
 
 class EmbeddingProcessor:
     """
@@ -43,6 +49,9 @@ class EmbeddingProcessor:
         )
         self._model.to(self._device)
         self._model.eval()
+        # 추론 전용 — gradient 관련 메모리 할당 차단
+        for p in self._model.parameters():
+            p.requires_grad_(False)
 
         log_vram("Embed 로드 후")
         logger.info("[Embed] 모델 준비 완료")
@@ -55,9 +64,12 @@ class EmbeddingProcessor:
         counts = torch.clamp(mask.sum(dim=1), min=1e-9)
         return summed / counts
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str], task: str = "passage") -> list[list[float]]:
         """
         텍스트 리스트를 임베딩 벡터 리스트로 변환합니다.
+
+        Args:
+            task: "passage" (인덱싱) 또는 "query" (검색 질문)
 
         Returns:
             각 텍스트에 대한 float 벡터 리스트 (L2 정규화됨)
@@ -65,11 +77,13 @@ class EmbeddingProcessor:
         import torch
         import torch.nn.functional as F
 
+        prefix = _TASK_INSTRUCTIONS.get(task, "")
+
         all_vectors: list[list[float]] = []
         batch_size = cfg.embed.batch_size
 
         for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
+            batch = [prefix + t for t in texts[i : i + batch_size]]
             encoded = self._tokenizer(
                 batch,
                 padding=True,
@@ -78,7 +92,7 @@ class EmbeddingProcessor:
                 return_tensors="pt",
             ).to(self._device)
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 output = self._model(**encoded)
 
             pooled = self._mean_pool(output.last_hidden_state, encoded["attention_mask"])

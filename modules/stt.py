@@ -66,7 +66,7 @@ def transcribe(
         audio_path,
         language=language,
         initial_prompt=initial_prompt,
-        beam_size=3,
+        beam_size=cfg.stt.beam_size,
         best_of=1,
         word_timestamps=False,
         vad_filter=cfg.stt.vad_filter,
@@ -74,7 +74,7 @@ def transcribe(
             "min_silence_duration_ms": 300,
             "speech_pad_ms": 100,
         },
-        condition_on_previous_text=True,
+        condition_on_previous_text=False,   # True → 반복 hallucination 유발 + 느림
         compression_ratio_threshold=2.4,
         log_prob_threshold=-1.0,
         no_speech_threshold=0.6,
@@ -82,17 +82,13 @@ def transcribe(
 
     segments: list[dict] = []
     for seg in segments_gen:
-        words = []
-        if seg.words:
-            words = [
-                {"word": w.word, "start": round(w.start, 3), "end": round(w.end, 3)}
-                for w in seg.words
-            ]
+        text = seg.text.strip()
+        if not text:
+            continue
         segments.append({
             "start": round(seg.start, 3),
             "end":   round(seg.end,   3),
-            "text":  seg.text.strip(),
-            "words": words,
+            "text":  text,
         })
 
     logger.info(

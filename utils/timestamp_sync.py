@@ -69,7 +69,8 @@ def stretch_audio_to_duration(
         )
 
     # librosa phase vocoder 스트레칭 (rate = 1/ratio: >1이면 빠르게, <1이면 느리게)
-    stretched = librosa.effects.time_stretch(y, rate=1.0 / clamped, n_fft=512)
+    # n_fft=1024 (~43ms @24kHz) — 인간 음성 기본 주파수에 적합, 음질 향상
+    stretched = librosa.effects.time_stretch(y, rate=1.0 / clamped, n_fft=1024)
 
     # 샘플 수 정확히 맞추기 (무음 패딩 or 트리밍)
     target_samples = int(sr * target_duration)
@@ -86,6 +87,81 @@ def stretch_audio_to_duration(
     sf.write(output_path, stretched.astype(np.float32), sr)
     logger.debug(
         f"[Sync] {actual_duration:.2f}s → {target_duration:.2f}s "
+        f"(ratio={ratio:.2f}, clamped={clamped:.2f})"
+    )
+
+
+def stretch_audio_array(
+    y: np.ndarray,
+    target_duration: float,
+    output_path: str,
+    sr: int = 24_000,
+    min_ratio: float = 0.5,
+    max_ratio: float = 2.5,
+) -> None:
+    """
+    numpy 배열을 직접 받아 target_duration에 맞게 스트레칭 후 저장합니다.
+    파일 I/O 없이 TTS GPU 출력을 바로 처리하여 속도를 높입니다.
+
+    Args:
+        y:                TTS 출력 numpy 배열 (float32, mono)
+        target_duration:  목표 길이 (초)
+        output_path:      결과 WAV 파일
+        sr:               샘플레이트
+        min_ratio:        최소 스트레칭 비율
+        max_ratio:        최대 스트레칭 비율
+    """
+    import soundfile as sf
+    import librosa
+
+    y = y.astype(np.float32).flatten()
+    actual_duration = len(y) / sr
+
+    # 무음 세그먼트 처리
+    if actual_duration < 0.05 or np.abs(y).max() < 1e-5:
+        silence = np.zeros(int(sr * target_duration), dtype=np.float32)
+        sf.write(output_path, silence, sr)
+        logger.debug(f"[Sync] 무음 구간 → {target_duration:.2f}s 무음 패딩")
+        return
+
+    ratio = target_duration / actual_duration
+
+    if abs(ratio - 1.0) < 0.02:
+        # 거의 동일 — 스트레칭 불필요
+        target_samples = int(sr * target_duration)
+        if len(y) < target_samples:
+            y = np.pad(y, (0, target_samples - len(y)))
+        else:
+            y = y[:target_samples]
+        sf.write(output_path, y, sr)
+        logger.debug(f"[Sync] 스트레칭 불필요 ({actual_duration:.2f}s ≈ {target_duration:.2f}s)")
+        return
+
+    # 비율 클램프
+    clamped = max(min_ratio, min(ratio, max_ratio))
+    if clamped != ratio:
+        logger.warning(
+            f"[Sync] 비율 클램프: {ratio:.2f} → {clamped:.2f} "
+            f"(target={target_duration:.2f}s, actual={actual_duration:.2f}s)"
+        )
+
+    stretched = librosa.effects.time_stretch(y, rate=1.0 / clamped, n_fft=1024)
+
+    # 샘플 수 정확히 맞추기
+    target_samples = int(sr * target_duration)
+    if len(stretched) < target_samples:
+        stretched = np.pad(stretched, (0, target_samples - len(stretched)))
+    else:
+        stretched = stretched[:target_samples]
+
+    # 클리핑 방지
+    peak = np.abs(stretched).max()
+    if peak > 0.99:
+        stretched = stretched * (0.95 / peak)
+
+    sf.write(output_path, stretched.astype(np.float32), sr)
+    logger.debug(
+        f"[Sync] (array) {actual_duration:.2f}s → {target_duration:.2f}s "
         f"(ratio={ratio:.2f}, clamped={clamped:.2f})"
     )
 

@@ -48,9 +48,11 @@ logger = logging.getLogger(__name__)
 # ── 파이프라인 ────────────────────────────────────────────────────────────────
 def run_pipeline(args: argparse.Namespace) -> None:
     from config import cfg, MODE
-    from utils.audio import extract_audio, get_video_duration, mix_dubbed_into_video, export_srt
+    from utils.audio import extract_audio, get_video_duration, mix_dubbed_into_video, export_srt, check_ffmpeg
     from utils.timestamp_sync import merge_dubbed_audio
     from utils.memory import clear_vram
+
+    check_ffmpeg()
 
     logger.info(f"{'=' * 55}")
     logger.info(f"  edu_pipeline 시작  (mode={MODE})")
@@ -58,6 +60,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
     logger.info(f"{'=' * 55}")
 
     video_path = args.input
+    if not Path(video_path).is_file():
+        logger.error(f"입력 파일이 존재하지 않습니다: {video_path}")
+        sys.exit(1)
+
     stem       = Path(video_path).stem
     out_dir    = Path(cfg.output_dir) / stem
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -77,7 +83,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     logger.info("━━━ STEP 2: STT (자막 추출) ━━━")
     from modules.stt import transcribe
 
-    segments = transcribe(audio_path, language=args.lang or None)
+    segments = transcribe(audio_path, language=args.lang)
 
     srt_orig = str(out_dir / "subtitles_original.srt")
     export_srt(segments, srt_orig, use_translated=False)
@@ -93,8 +99,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
     llm = LLMProcessor()
 
-    # 번역
-    if args.lang != args.target_lang or args.force_translate:
+    # 번역 (언어가 다르거나, 자동감지 모드이거나, 강제 번역 시)
+    need_translate = args.force_translate or (args.lang is not None and args.lang != args.target_lang)
+    if need_translate:
         segments = llm.translate_segments(segments, target_lang=args.target_lang)
         srt_trans = str(out_dir / f"subtitles_{args.target_lang}.srt")
         export_srt(segments, srt_trans, use_translated=True)
@@ -103,10 +110,15 @@ def run_pipeline(args: argparse.Namespace) -> None:
         # 번역 없이 원본을 translated로 복사 (이후 단계 통일을 위해)
         segments = [{**s, "translated": s["text"]} for s in segments]
 
-    # 연령별 요약 (3가지)
+    # 연령별 요약 (3가지 통합 1회 호출) — context window 초과 방지 위해 최대 12000자
     full_text = " ".join(s["text"] for s in segments)
-    for age in ["child", "teen", "adult"]:
-        summary = llm.summarize_by_age(full_text, age_group=age)
+    MAX_SUMMARY_CHARS = 12000
+    if len(full_text) > MAX_SUMMARY_CHARS:
+        logger.warning(f"[LLM] 요약 텍스트가 너무 깁니다 ({len(full_text)}자) → {MAX_SUMMARY_CHARS}자로 자릅니다.")
+        full_text = full_text[:MAX_SUMMARY_CHARS]
+
+    summaries = llm.summarize_all_ages(full_text)
+    for age, summary in summaries.items():
         path = str(out_dir / f"summary_{age}.txt")
         with open(path, "w", encoding="utf-8") as f:
             f.write(summary)
@@ -212,7 +224,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # 입력
     p.add_argument("-i", "--input",       metavar="VIDEO",  help="입력 영상 파일 경로")
-    p.add_argument("--lang",             default="ko",     help="원본 언어 코드 (기본: ko)")
+    p.add_argument("--lang",             default=None,      help="원본 언어 코드 (ko, en, ja 등). 생략 시 자동 감지")
     p.add_argument("--target-lang",      default="ko",     help="번역 목표 언어 (기본: ko)")
     p.add_argument("--force-translate",  action="store_true", help="원본과 목표 언어가 같아도 번역 실행")
 

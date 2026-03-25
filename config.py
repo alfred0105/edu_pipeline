@@ -34,13 +34,18 @@ class _STTConfig:
     model_size: str      = "large-v3-turbo"      # faster-whisper 모델 크기
     device: str          = field(default_factory=lambda: "cuda"    if MODE == "pc" else "auto")
     compute_type: str    = field(default_factory=lambda: "float16" if MODE == "pc" else "float32")
-    beam_size: int       = 5
+    beam_size: int       = 3
     vad_filter: bool     = True                  # 무음 구간 자동 제거
 
 @dataclass
 class _LLMConfig:
     model_id: str        = "Qwen/Qwen3-4B"
-    # PC: bitsandbytes 4-bit 양자화 / Mac: mlx-lm 자체 양자화
+    # PC: llama.cpp GGUF 양자화 (transformers 대비 2~3배 빠름, GPU 가속)
+    gguf_repo: str       = "Qwen/Qwen3-4B-GGUF"
+    gguf_file: str       = "Qwen3-4B-Q4_K_M.gguf"
+    n_gpu_layers: int    = -1                   # -1 = 전체 GPU 오프로드
+    n_ctx: int           = 4096                 # 컨텍스트 길이
+    # Mac: mlx-lm 자체 양자화
     load_in_4bit: bool   = field(default_factory=lambda: MODE == "pc")
     max_new_tokens: int  = 1024
     temperature: float   = 0.1                  # 번역/요약은 낮게 유지

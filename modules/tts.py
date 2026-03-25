@@ -9,7 +9,7 @@ F5-TTS 특징:
   - 8GB VRAM 내에서 안정적으로 동작
 
 속도 최적화:
-  - nfe_step=8 (기본 32 → 4배 빠름, 품질 소폭 저하)
+  - nfe_step=16 (기본 32 → 2배 빠름, 속도-품질 균형점)
   - GPU 추론과 CPU 후처리(스트레칭)를 ThreadPoolExecutor로 오버랩
 
 타임스탬프 동기화:
@@ -22,14 +22,12 @@ F5-TTS 특징:
 """
 
 import logging
-import os
-import tempfile
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 
 from config import cfg
 from utils.memory import clear_vram, log_vram
-from utils.timestamp_sync import stretch_audio_to_duration
+from utils.timestamp_sync import stretch_audio_to_duration, stretch_audio_array
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +50,14 @@ class TTSProcessor:
     Args:
         ref_audio_path: 화자 클로닝용 참조 WAV 파일 경로 (선택)
         ref_text:       참조 음성에 대한 정확한 텍스트 (클로닝 품질 향상)
-        nfe_step:       추론 스텝 수 (기본 8, 낮을수록 빠름/품질 저하)
+        nfe_step:       추론 스텝 수 (기본 16, 낮을수록 빠름/품질 저하)
     """
 
     def __init__(
         self,
         ref_audio_path: str | None = None,
         ref_text: str | None = None,
-        nfe_step: int = 8,
+        nfe_step: int = 16,
     ):
         logger.info(f"[TTS] F5-TTS 로드 중  device={cfg.tts.device}  nfe_step={nfe_step}")
         log_vram("TTS 로드 전")
@@ -80,41 +78,43 @@ class TTSProcessor:
         log_vram("TTS 로드 후")
 
     # ── 단일 세그먼트 GPU 추론 (wav 반환) ────────────────────────────────
-    def _infer(self, text: str):
+    def _infer(self, text: str, nfe_step: int | None = None):
         """GPU 추론만 수행하고 (wav, sr)을 반환합니다."""
         wav, sr, _ = self._tts.infer(
             ref_file=self._ref_audio,
             ref_text=self._ref_text,
             gen_text=text,
             target_rms=0.1,
-            nfe_step=self._nfe_step,
+            nfe_step=nfe_step or self._nfe_step,
         )
         return wav, sr
 
-    # ── CPU 후처리 (스트레칭 + 파일 저장) ────────────────────────────────
+    @staticmethod
+    def _adaptive_nfe(text: str, base_nfe: int) -> int:
+        """텍스트 길이에 따라 nfe_step을 조절합니다. 짧으면 적은 스텝으로도 충분."""
+        length = len(text)
+        if length < 10:
+            return max(8, base_nfe // 2)
+        if length < 30:
+            return max(8, base_nfe * 3 // 4)
+        return base_nfe
+
+    # ── CPU 후처리 (스트레칭 + 파일 저장) — tempfile I/O 제거 ─────────────
     @staticmethod
     def _postprocess(wav, sr: int, target_duration: float, output_path: str) -> str:
-        """CPU에서 오디오 스트레칭 후 저장합니다."""
-        import soundfile as sf
+        """CPU에서 numpy 배열 직접 스트레칭 후 저장합니다."""
+        import numpy as np
 
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
-
-        try:
-            sf.write(tmp_path, wav, sr)
-            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-            stretch_audio_to_duration(
-                tmp_path,
-                target_duration,
-                output_path,
-                sr=sr,
-                min_ratio=cfg.tts.min_stretch_ratio,
-                max_ratio=cfg.tts.max_stretch_ratio,
-            )
-        finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        wav_np = np.asarray(wav, dtype=np.float32).flatten()
+        stretch_audio_array(
+            wav_np,
+            target_duration,
+            output_path,
+            sr=sr,
+            min_ratio=cfg.tts.min_stretch_ratio,
+            max_ratio=cfg.tts.max_stretch_ratio,
+        )
         return output_path
 
     # ── 전체 세그먼트 합성 (GPU 추론 + CPU 후처리 오버랩) ────────────────
@@ -149,6 +149,12 @@ class TTSProcessor:
                 duration = seg["end"] - seg["start"]
                 out_path = str(Path(output_dir) / f"seg_{i:04d}.wav")
 
+                # 빈 텍스트 또는 극히 짧은 구간은 무음 처리
+                if not text.strip() or duration < 0.1:
+                    logger.info(f"[TTS] {i + 1}/{total}  건너뜀 (빈 텍스트/짧은 구간)")
+                    result[i] = {**seg, "tts_path": None}
+                    continue
+
                 logger.info(
                     f"[TTS] {i + 1}/{total}  "
                     f"duration={duration:.1f}s  "
@@ -163,9 +169,10 @@ class TTSProcessor:
                     except Exception as e:
                         logger.error(f"[TTS] 세그먼트 {i - 2} 후처리 실패: {e}")
 
-                # GPU 추론 (동기 실행)
+                # GPU 추론 (동기 실행, adaptive nfe_step)
                 try:
-                    wav, sr = self._infer(text)
+                    nfe = self._adaptive_nfe(text, self._nfe_step)
+                    wav, sr = self._infer(text, nfe_step=nfe)
                     # CPU 후처리는 비동기로 제출 → 다음 GPU 추론과 오버랩
                     pending[i] = executor.submit(
                         self._postprocess, wav, sr, duration, out_path
