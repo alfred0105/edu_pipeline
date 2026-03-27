@@ -210,6 +210,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
             tts_cmd += ["--ref-audio", ref_audio]
         if ref_text:
             tts_cmd += ["--ref-text", ref_text]
+        tts_cmd += ["--language", args.target_lang]
 
         # 세그먼트 수 기반 타임아웃: 세그먼트당 최대 10초 + 여유 120초
         tts_timeout = len(segments) * 10 + 120

@@ -52,8 +52,8 @@ class _LLMConfig:
 
 @dataclass
 class _TTSConfig:
-    # F5-TTS 모델 (https://github.com/SWivid/F5-TTS)
-    model_name: str      = "F5TTS_v1_Base"
+    # Qwen3-TTS 모델 (https://github.com/QwenLM/Qwen3-TTS)
+    model_id: str        = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"   # 0.6B ~0.8GB VRAM
     device: str          = field(default_factory=lambda: "cuda" if MODE == "pc" else "mps")
     # 타임스탬프 동기화 허용 스트레칭 범위
     min_stretch_ratio: float = 0.5               # 원본 속도의 0.5배까지만 느리게

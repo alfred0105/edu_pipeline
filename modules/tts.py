@@ -1,24 +1,19 @@
 """
 modules/tts.py
 ────────────────────────────────────────────────────────────────────
-TTS 모듈 — F5-TTS를 이용한 AI 더빙 생성.
+TTS 모듈 — Qwen3-TTS를 이용한 AI 더빙 생성.
 
-F5-TTS 특징:
-  - Flow Matching 기반 비자기회귀 모델 → 빠른 추론 속도
-  - 참조 음성(ref_audio) 제공 시 화자 목소리 복제(클로닝) 가능
-  - 8GB VRAM 내에서 안정적으로 동작
-
-속도 최적화:
-  - nfe_step=16 (기본 32 → 2배 빠름, 속도-품질 균형점)
-  - GPU 추론과 CPU 후처리(스트레칭)를 ThreadPoolExecutor로 오버랩
+Qwen3-TTS 특징:
+  - 0.6B / 1.7B 모델 선택 가능
+  - 3초 참조 음성으로 화자 클로닝 (Voice Cloning)
+  - 한국어·영어·베트남어 등 10개 언어 지원
+  - create_voice_clone_prompt()로 참조 특성을 미리 추출해
+    세그먼트마다 재추출 없이 빠르게 생성
 
 타임스탬프 동기화:
   - Whisper 세그먼트의 (end - start) 시간에 맞게
     stretch_audio_to_duration()으로 음성 길이를 조정합니다.
   - 조정 가능 범위: 0.5배(느리게) ~ 2.5배(빠르게)
-  - 범위 초과 시 클램프 + 무음 패딩으로 보완
-
-참조 음성 없이도 기본 화자로 생성 가능합니다.
 """
 
 import logging
@@ -28,106 +23,107 @@ from pathlib import Path
 
 from config import cfg
 from utils.memory import clear_vram, log_vram
-from utils.timestamp_sync import stretch_audio_to_duration, stretch_audio_array
+from utils.timestamp_sync import stretch_audio_array
 
 logger = logging.getLogger(__name__)
 
-# F5-TTS 내부 샘플레이트
-F5_TTS_SR = 24_000
+# Qwen3-TTS 내부 샘플레이트
+QWEN3_TTS_SR = 24_000
 
-
-def _get_default_ref():
-    from importlib.resources import files
-    return (
-        str(files("f5_tts").joinpath("infer/examples/basic/basic_ref_en.wav")),
-        "Some call me nature, others call me mother nature.",
-    )
+# 언어 코드 → Qwen3-TTS 언어 이름 매핑 (소문자)
+LANG_MAP = {
+    "ko": "korean",
+    "en": "english",
+    "vi": "vietnamese",
+    "lo": "lao",
+    "zh": "chinese",
+    "ja": "japanese",
+    "fr": "french",
+    "es": "spanish",
+    "de": "german",
+    "ar": "arabic",
+}
 
 
 class TTSProcessor:
     """
-    F5-TTS 래퍼.
+    Qwen3-TTS 래퍼.
 
     Args:
         ref_audio_path: 화자 클로닝용 참조 WAV 파일 경로 (선택)
-        ref_text:       참조 음성에 대한 정확한 텍스트 (클로닝 품질 향상)
-        nfe_step:       추론 스텝 수 (기본 16, 낮을수록 빠름/품질 저하)
+        ref_text:       참조 음성에 대한 텍스트 (클로닝 품질 향상, 생략 가능)
+        language:       생성 언어 코드 (기본 "ko")
     """
 
     def __init__(
         self,
         ref_audio_path: str | None = None,
         ref_text: str | None = None,
-        nfe_step: int = 12,
+        language: str = "ko",
     ):
-        logger.info(f"[TTS] F5-TTS 로드 중  device={cfg.tts.device}  nfe_step={nfe_step}")
+        logger.info(f"[TTS] Qwen3-TTS 로드 중  model={cfg.tts.model_id}  device={cfg.tts.device}")
         log_vram("TTS 로드 전")
 
-        from f5_tts.api import F5TTS
+        import torch
+        from qwen_tts import Qwen3TTSModel
 
-        self._tts       = F5TTS(device=cfg.tts.device)
-        self._ref_audio = ref_audio_path
-        self._ref_text  = ref_text or ""
-        self._nfe_step  = nfe_step
-        # F5-TTS 내부 print() 억제용 (세그먼트마다 파일 열기 방지)
-        self._devnull   = open(os.devnull, "w")
+        dtype = torch.bfloat16
+        self._model = Qwen3TTSModel.from_pretrained(
+            cfg.tts.model_id,
+            device_map=cfg.tts.device,
+            dtype=dtype,
+        )
+        self._language = LANG_MAP.get(language, "korean")
+        self._voice_clone_prompt = None
 
-        if not ref_audio_path:
-            self._ref_audio, self._ref_text = _get_default_ref()
-            logger.info("[TTS] 참조 음성 없음 — 기본 화자 사용")
+        if ref_audio_path and Path(ref_audio_path).is_file():
+            logger.info(f"[TTS] 화자 클로닝 프롬프트 생성 중: {ref_audio_path}")
+            prompts = self._model.create_voice_clone_prompt(
+                ref_audio=ref_audio_path,
+                ref_text=ref_text or None,
+            )
+            self._voice_clone_prompt = prompts[0] if prompts else None
+            logger.info("[TTS] 화자 클로닝 프롬프트 생성 완료")
         else:
-            logger.info(f"[TTS] 참조 음성 설정: {ref_audio_path}")
+            logger.info("[TTS] 참조 음성 없음 — 무음 더미로 기본 화자 프롬프트 생성 중")
+            self._voice_clone_prompt = self._make_default_prompt()
 
         log_vram("TTS 로드 후")
 
-    # F5-TTS 내부 print/show_info 억제용
-    @staticmethod
-    def _noop(*args, **kwargs):
-        pass
+    # ── 기본 화자 프롬프트 생성 (참조 음성 없을 때) ───────────────────────
+    def _make_default_prompt(self):
+        """무음 3초 WAV를 임시 파일로 만들어 voice_clone_prompt를 생성합니다."""
+        import tempfile
+        import numpy as np
+        import soundfile as sf
 
-    # ── 단일 세그먼트 GPU 추론 (wav 반환) ────────────────────────────────
-    def _infer(self, text: str, nfe_step: int | None = None):
-        """GPU 추론만 수행하고 (wav, sr)을 반환합니다."""
-        import sys
-
-        # F5-TTS 내부 print() 억제 (ref_text, gen_text 매 호출 출력 방지)
-        old_stdout = sys.stdout
-        sys.stdout = self._devnull
+        silence = np.zeros(QWEN3_TTS_SR * 3, dtype=np.float32)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+        sf.write(tmp_path, silence, QWEN3_TTS_SR)
         try:
-            wav, sr, _ = self._tts.infer(
-                ref_file=self._ref_audio,
-                ref_text=self._ref_text,
-                gen_text=text,
-                target_rms=0.1,
-                nfe_step=nfe_step or self._nfe_step,
-                show_info=self._noop,  # "Generating audio in N batches..." 억제
-                progress=None,         # tqdm 비활성화
-            )
-            return wav, sr
-        except Exception as e:
-            logger.error(f"[TTS] _infer 실패: {e}", exc_info=True)
-            raise
+            prompts = self._model.create_voice_clone_prompt(ref_audio=tmp_path, ref_text=None)
+            prompt = prompts[0] if prompts else None
         finally:
-            sys.stdout = old_stdout
+            Path(tmp_path).unlink(missing_ok=True)
+        logger.info("[TTS] 기본 화자 프롬프트 생성 완료")
+        return prompt
 
-    @staticmethod
-    def _adaptive_nfe(text: str, base_nfe: int) -> int:
-        """텍스트 길이에 따라 nfe_step을 조절합니다. 짧으면 적은 스텝으로도 충분."""
-        length = len(text)
-        if length < 8:
-            return max(6, base_nfe // 3)    # 극히 짧은 텍스트: 1/3
-        if length < 20:
-            return max(6, base_nfe // 2)    # 짧은 텍스트: 1/2
-        if length < 40:
-            return max(8, base_nfe * 3 // 4)  # 보통: 3/4
-        return base_nfe
+    # ── 단일 세그먼트 추론 ────────────────────────────────────────────────
+    def _infer(self, text: str):
+        """텍스트를 음성으로 변환하고 (wav_array, sr)을 반환합니다."""
+        wavs, sr = self._model.generate_voice_clone(
+            text=text,
+            language=self._language,
+            voice_clone_prompt=self._voice_clone_prompt,
+            non_streaming_mode=True,
+        )
+        return wavs[0], sr
 
-    # ── CPU 후처리 (스트레칭 + 파일 저장) — tempfile I/O 제거 ─────────────
+    # ── CPU 후처리 (스트레칭 + 저장) ─────────────────────────────────────
     @staticmethod
     def _postprocess(wav, sr: int, target_duration: float, output_path: str) -> str:
-        """CPU에서 numpy 배열 직접 스트레칭 후 저장합니다."""
         import numpy as np
-
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         wav_np = np.asarray(wav, dtype=np.float32).flatten()
         stretch_audio_array(
@@ -140,7 +136,7 @@ class TTSProcessor:
         )
         return output_path
 
-    # ── 전체 세그먼트 합성 (GPU 추론 + CPU 후처리 오버랩) ────────────────
+    # ── 전체 세그먼트 합성 ────────────────────────────────────────────────
     def synthesize_all(
         self,
         segments: list[dict],
@@ -150,14 +146,6 @@ class TTSProcessor:
         """
         모든 세그먼트를 합성합니다.
         GPU 추론과 CPU 후처리를 오버랩해 속도를 높입니다.
-
-        Args:
-            segments:       [{start, end, text, translated?, ...}, ...]
-            output_dir:     TTS WAV 파일 저장 디렉토리
-            use_translated: True이면 'translated' 필드 사용, 없으면 'text' 폴백
-
-        Returns:
-            segments에 'tts_path' 필드가 추가된 리스트
         """
         import time
 
@@ -167,39 +155,33 @@ class TTSProcessor:
         success_count = 0
         t_start = time.time()
 
-        # 진행률 로그 간격: 10개 또는 10% 단위
         log_interval = max(1, min(10, total // 10))
 
-        # CPU 후처리 스레드풀 (GPU 추론과 오버랩)
         with ThreadPoolExecutor(max_workers=2) as executor:
             pending: dict[int, Future] = {}
 
             for i, seg in enumerate(segments):
-                text     = seg.get("translated", seg["text"]) if use_translated else seg["text"]
+                text = seg.get("translated", seg["text"]) if use_translated else seg["text"]
                 duration = seg["end"] - seg["start"]
                 out_path = str(Path(output_dir) / f"seg_{i:04d}.wav")
 
-                # 빈 텍스트 또는 짧은 구간은 무음 처리 (TTS 품질이 낮고 시간만 소모)
                 if not text.strip() or duration < 0.5:
                     result[i] = {**seg, "tts_path": None}
                     continue
 
-                # 진행률 표시 (log_interval마다 + 첫 번째 + 마지막)
                 if i == 0 or (i + 1) % log_interval == 0 or i == total - 1:
                     elapsed = time.time() - t_start
+                    eta_str = ""
                     if success_count > 0:
                         eta = elapsed / success_count * (total - i)
                         eta_str = f"  ETA {eta:.0f}s"
-                    else:
-                        eta_str = ""
                     logger.info(
                         f"[TTS] {i + 1}/{total} ({(i + 1) * 100 // total}%)  "
-                        f"성공={success_count}  "
-                        f"경과={elapsed:.0f}s{eta_str}  "
+                        f"성공={success_count}  경과={elapsed:.0f}s{eta_str}  "
                         f"text={text[:35]}{'...' if len(text) > 35 else ''}"
                     )
 
-                # 이전 세그먼트 CPU 후처리 완료 확인 (2개 앞서 대기)
+                # 이전 CPU 후처리 완료 확인
                 if i - 2 in pending:
                     fut = pending.pop(i - 2)
                     try:
@@ -207,11 +189,9 @@ class TTSProcessor:
                     except Exception as e:
                         logger.error(f"[TTS] 세그먼트 {i - 2} 후처리 실패: {e}")
 
-                # GPU 추론 (동기 실행, adaptive nfe_step)
+                # GPU 추론
                 try:
-                    nfe = self._adaptive_nfe(text, self._nfe_step)
-                    wav, sr = self._infer(text, nfe_step=nfe)
-                    # CPU 후처리는 비동기로 제출 → 다음 GPU 추론과 오버랩
+                    wav, sr = self._infer(text)
                     pending[i] = executor.submit(
                         self._postprocess, wav, sr, duration, out_path
                     )
@@ -221,23 +201,26 @@ class TTSProcessor:
                     logger.error(f"[TTS] 세그먼트 {i} 합성 실패: {e}")
                     result[i] = {**seg, "tts_path": None}
 
-            # 남은 CPU 후처리 완료 대기
             for idx, fut in pending.items():
                 try:
                     fut.result()
                 except Exception as e:
                     logger.error(f"[TTS] 세그먼트 {idx} 후처리 실패: {e}")
-                    result[idx] = {**result[idx], "tts_path": None}
+                    if result[idx]:
+                        result[idx] = {**result[idx], "tts_path": None}
 
         successful = sum(1 for r in result if r and r.get("tts_path"))
         elapsed_total = time.time() - t_start
-        logger.info(f"[TTS] 합성 완료: {successful}/{total}개 성공  총 {elapsed_total:.1f}초 ({elapsed_total / 60:.1f}분)")
+        logger.info(
+            f"[TTS] 합성 완료: {successful}/{total}개 성공  "
+            f"총 {elapsed_total:.1f}초 ({elapsed_total / 60:.1f}분)"
+        )
         return result
 
     # ── VRAM 해제 ────────────────────────────────────────────────────────
     def unload(self) -> None:
-        del self._tts
-        self._devnull.close()
+        del self._model
+        self._model = None
         clear_vram()
         log_vram("TTS 해제 후")
         logger.info("[TTS] 모델 해제 완료")
