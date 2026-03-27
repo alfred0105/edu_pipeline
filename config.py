@@ -39,10 +39,10 @@ class _STTConfig:
 
 @dataclass
 class _LLMConfig:
-    model_id: str        = "Qwen/Qwen3-4B"
+    model_id: str        = "Qwen/Qwen3-8B"
     # PC: llama.cpp GGUF 양자화 (transformers 대비 2~3배 빠름, GPU 가속)
-    gguf_repo: str       = "Qwen/Qwen3-4B-GGUF"
-    gguf_file: str       = "Qwen3-4B-Q4_K_M.gguf"
+    gguf_repo: str       = "Qwen/Qwen3-8B-GGUF"
+    gguf_file: str       = "Qwen3-8B-Q4_K_M.gguf"
     n_gpu_layers: int    = -1                   # -1 = 전체 GPU 오프로드
     n_ctx: int           = 4096                 # 컨텍스트 길이
     # Mac: mlx-lm 자체 양자화
@@ -63,7 +63,7 @@ class _TTSConfig:
 class _EmbedConfig:
     model_id: str        = "Qwen/Qwen3-Embedding-0.6B"
     device: str          = field(default_factory=lambda: "cuda" if MODE == "pc" else "mps")
-    batch_size: int      = 32
+    batch_size: int      = 64
     max_length: int      = 512
 
 @dataclass

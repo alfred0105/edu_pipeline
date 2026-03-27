@@ -183,11 +183,14 @@ class RAGChatbot:
         return chunks
 
     # ── 답변 생성 ────────────────────────────────────────────────────────
-    def query(self, question: str) -> str:
+    def query(self, question: str, keep_llm: bool = False) -> str:
         """
         질문에 답합니다. 관련 청크가 없으면 "정보 없음" 문장을 반환합니다.
 
         8GB VRAM 보호: 임베딩 완료 → embedder 해제 → LLM 로드 → 답변 생성
+
+        Args:
+            keep_llm: True면 LLM을 해제하지 않음 (연속 질문 시 재로드 방지)
         """
         chunks = self._retrieve(question)
 
@@ -215,6 +218,9 @@ class RAGChatbot:
         llm    = self._get_llm()
         answer = llm.generate(prompt, 512)
 
+        if not keep_llm:
+            self._release_llm()
+
         if not answer.strip():
             return _NO_CONTEXT_REPLY
 
@@ -241,8 +247,10 @@ class RAGChatbot:
                 print("챗봇을 종료합니다.")
                 break
 
-            answer = self.query(question)
+            # keep_llm=True → 연속 질문 시 LLM 재로드 없이 즉시 응답
+            answer = self.query(question, keep_llm=True)
             print(f"\n답변 > {answer}\n")
 
-            # 답변 후 LLM 해제 → 다음 질문의 embedding 여유 확보
-            self._release_llm()
+        # 챗봇 종료 시 모델 해제
+        self._release_llm()
+        self._release_embedder()

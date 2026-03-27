@@ -124,15 +124,23 @@ def extract_ref_clip(
     """
     STT 세그먼트 중 화자 클로닝에 적합한 구간을 찾아 WAV로 추출합니다.
 
-    조건: 5~15초 길이, 텍스트 길이 15자 이상인 세그먼트 중 가장 긴 것 선택
+    조건: 5~10초 길이, 텍스트 15자 이상 중 가장 긴 것 선택
+    F5-TTS는 12초 초과 클립을 잘라내므로, 10초 이하로 제한하여
+    불필요한 mel 연산을 줄이고 추론 속도를 높입니다.
 
     Returns:
         (output_path, ref_text) 또는 실패 시 None
     """
     candidates = [
         s for s in segments
-        if 5.0 <= (s["end"] - s["start"]) <= 15.0 and len(s["text"]) >= 15
+        if 5.0 <= (s["end"] - s["start"]) <= 10.0 and len(s["text"]) >= 15
     ]
+    # 10초 이하로 못 찾으면 12초까지 허용
+    if not candidates:
+        candidates = [
+            s for s in segments
+            if 5.0 <= (s["end"] - s["start"]) <= 12.0 and len(s["text"]) >= 15
+        ]
     if not candidates:
         return None
 

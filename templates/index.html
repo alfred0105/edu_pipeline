@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>edu_pipeline</title>
+<style>
+  :root {
+    --bg: #0f0f23; --bg2: #1a1a3e; --bg3: #252552;
+    --fg: #e2e2f0; --dim: #8888aa; --accent: #7c9cff;
+    --green: #7ddf7d; --red: #ff7b7b; --orange: #ffb86c;
+    --border: #333366; --radius: 10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', '맑은 고딕', sans-serif;
+    background: var(--bg); color: var(--fg);
+    min-height: 100vh; padding: 0;
+  }
+
+  /* 헤더 */
+  header {
+    background: linear-gradient(135deg, var(--bg2), var(--bg3));
+    padding: 28px 32px 20px; border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 1.6rem; font-weight: 700; }
+  header p  { color: var(--dim); margin-top: 4px; font-size: 0.9rem; }
+
+  .container { max-width: 900px; margin: 0 auto; padding: 24px 20px; }
+
+  /* 카드 */
+  .card {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 16px;
+  }
+  .card-title {
+    font-size: 0.85rem; font-weight: 600; color: var(--accent);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px;
+  }
+
+  /* 파일 선택 */
+  .file-list { display: flex; flex-wrap: wrap; gap: 8px; }
+  .file-item {
+    padding: 8px 16px; background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 6px; cursor: pointer; font-size: 0.9rem; transition: all 0.2s;
+  }
+  .file-item:hover { border-color: var(--accent); }
+  .file-item.selected { border-color: var(--accent); background: rgba(124,156,255,0.15); color: #fff; }
+
+  /* 옵션 그리드 */
+  .opt-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+  }
+  @media (max-width: 600px) { .opt-grid { grid-template-columns: 1fr; } }
+
+  .opt-group label {
+    display: block; font-size: 0.8rem; color: var(--dim);
+    margin-bottom: 4px; font-weight: 500;
+  }
+  select, input[type="text"] {
+    width: 100%; padding: 8px 12px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px;
+    color: var(--fg); font-size: 0.9rem; outline: none;
+  }
+  select:focus, input:focus { border-color: var(--accent); }
+
+  /* 체크박스 */
+  .checks { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; }
+  .checks label {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 0.85rem; color: var(--fg); cursor: pointer;
+  }
+  .checks input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+
+  /* 버튼 */
+  .btn-row { display: flex; gap: 10px; margin-top: 4px; }
+  .btn {
+    padding: 12px 28px; border: none; border-radius: 8px;
+    font-size: 1rem; font-weight: 700; cursor: pointer; transition: all 0.2s;
+  }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-run  { background: var(--green); color: #111; }
+  .btn-run:hover:not(:disabled) { background: #6fcf6f; }
+  .btn-stop { background: var(--red); color: #111; }
+  .btn-stop:hover:not(:disabled) { background: #ff6060; }
+
+  /* 상태 뱃지 */
+  .status {
+    display: inline-block; padding: 4px 12px; border-radius: 20px;
+    font-size: 0.8rem; font-weight: 600; margin-left: auto;
+  }
+  .status-idle    { background: var(--bg3); color: var(--dim); }
+  .status-running { background: rgba(125,223,125,0.15); color: var(--green); }
+  .status-done    { background: rgba(125,223,125,0.25); color: var(--green); }
+  .status-error   { background: rgba(255,123,123,0.15); color: var(--red); }
+  .status-stopped { background: rgba(255,184,108,0.15); color: var(--orange); }
+
+  /* 로그 */
+  #log {
+    background: #050510; border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px; font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 0.82rem; line-height: 1.5; color: #c8c8e0;
+    height: 340px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+  }
+
+  /* 결과물 */
+  .output-group { margin-bottom: 12px; }
+  .output-group summary {
+    cursor: pointer; font-weight: 600; font-size: 0.95rem;
+    padding: 6px 0; color: var(--accent);
+  }
+  .output-files { padding-left: 16px; margin-top: 4px; }
+  .output-files li { list-style: none; padding: 3px 0; font-size: 0.85rem; color: var(--dim); }
+
+  /* 스텝 인디케이터 */
+  .steps-bar { display: flex; gap: 4px; margin-bottom: 16px; }
+  .step-dot {
+    flex: 1; height: 6px; border-radius: 3px; background: var(--bg3); transition: background 0.5s;
+  }
+  .step-dot.active { background: var(--accent); }
+  .step-dot.done   { background: var(--green); }
+  .step-labels { display: flex; gap: 4px; margin-bottom: 8px; }
+  .step-label {
+    flex: 1; text-align: center; font-size: 0.7rem; color: var(--dim);
+  }
+  .step-label.active { color: var(--accent); font-weight: 600; }
+  .step-label.done { color: var(--green); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>edu_pipeline</h1>
+  <p>교육 영상 자동 처리 파이프라인 &mdash; STT / 번역 / 요약 / AI 더빙 / RAG 챗봇</p>
+</header>
+
+<div class="container">
+
+  <!-- 파일 선택 -->
+  <div class="card">
+    <div class="card-title">1. 영상 파일 선택</div>
+    <div class="file-list" id="fileList">
+      <span style="color:var(--dim)">파일 목록 로딩 중...</span>
+    </div>
+  </div>
+
+  <!-- 옵션 -->
+  <div class="card">
+    <div class="card-title">2. 옵션 설정</div>
+    <div class="opt-grid">
+      <div class="opt-group">
+        <label>원본 언어</label>
+        <select id="srcLang">
+          <option value="">자동 감지</option>
+          <option value="ko">한국어</option>
+          <option value="en">영어</option>
+          <option value="vi">베트남어</option>
+          <option value="lo">라오스어</option>
+        </select>
+      </div>
+      <div class="opt-group">
+        <label>번역 언어</label>
+        <select id="tgtLang">
+          <option value="ko" selected>한국어</option>
+          <option value="en">영어</option>
+          <option value="vi">베트남어</option>
+          <option value="lo">라오스어</option>
+        </select>
+      </div>
+      <div class="opt-group">
+        <label>시작 단계</label>
+        <select id="startFrom">
+          <option value="1">처음부터</option>
+          <option value="2">2. STT부터</option>
+          <option value="3">3. LLM부터</option>
+          <option value="4">4. TTS부터</option>
+          <option value="5">5. 임베딩부터</option>
+        </select>
+      </div>
+    </div>
+    <div class="checks">
+      <label><input type="checkbox" id="forceTranslate"> 번역 강제 실행</label>
+      <label><input type="checkbox" id="skipTts"> TTS 건너뛰기</label>
+      <label><input type="checkbox" id="chat"> 완료 후 챗봇</label>
+    </div>
+  </div>
+
+  <!-- 실행 -->
+  <div class="card">
+    <div style="display:flex; align-items:center; margin-bottom:14px;">
+      <div class="card-title" style="margin-bottom:0">3. 실행</div>
+      <span class="status status-idle" id="statusBadge">대기 중</span>
+    </div>
+
+    <div class="step-labels" id="stepLabels">
+      <span class="step-label">오디오</span>
+      <span class="step-label">STT</span>
+      <span class="step-label">LLM</span>
+      <span class="step-label">TTS</span>
+      <span class="step-label">임베딩</span>
+      <span class="step-label">인덱싱</span>
+    </div>
+    <div class="steps-bar" id="stepsBar">
+      <div class="step-dot"></div>
+      <div class="step-dot"></div>
+      <div class="step-dot"></div>
+      <div class="step-dot"></div>
+      <div class="step-dot"></div>
+      <div class="step-dot"></div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-run" id="btnRun" onclick="runPipeline()">실행</button>
+      <button class="btn btn-stop" id="btnStop" onclick="stopPipeline()" disabled>중지</button>
+    </div>
+  </div>
+
+  <!-- 로그 -->
+  <div class="card">
+    <div class="card-title">실시간 로그</div>
+    <div id="log">파이프라인을 실행하면 여기에 로그가 표시됩니다.\n</div>
+  </div>
+
+  <!-- 결과물 -->
+  <div class="card">
+    <div class="card-title">결과물</div>
+    <div id="outputList"><span style="color:var(--dim)">파이프라인 완료 후 표시됩니다.</span></div>
+  </div>
+</div>
+
+<script>
+let selectedFile = null;
+let currentJobId = null;
+
+// 파일 목록 로드
+async function loadFiles() {
+  const res = await fetch('/api/input-files');
+  const files = await res.json();
+  const el = document.getElementById('fileList');
+  if (files.length === 0) {
+    el.innerHTML = '<span style="color:var(--dim)">data/input 폴더에 영상 파일을 넣어주세요.</span>';
+    return;
+  }
+  el.innerHTML = '';
+  files.forEach(f => {
+    const item = document.createElement('div');
+    item.className = 'file-item';
+    item.textContent = f.name;
+    item.onclick = () => {
+      document.querySelectorAll('.file-item').forEach(x => x.classList.remove('selected'));
+      item.classList.add('selected');
+      selectedFile = f.path;
+    };
+    el.appendChild(item);
+  });
+}
+
+// 스텝 진행 파싱
+const STEP_KEYWORDS = ['STEP 1', 'STEP 2', 'STEP 3', 'STEP 4', 'STEP 5', 'STEP 6'];
+function updateSteps(line) {
+  const dots = document.querySelectorAll('.step-dot');
+  const labels = document.querySelectorAll('.step-label');
+  STEP_KEYWORDS.forEach((kw, i) => {
+    if (line.includes(kw)) {
+      // 이전 스텝들을 done으로
+      for (let j = 0; j < i; j++) {
+        dots[j].className = 'step-dot done';
+        labels[j].className = 'step-label done';
+      }
+      dots[i].className = 'step-dot active';
+      labels[i].className = 'step-label active';
+    }
+  });
+  if (line.includes('파이프라인 완료')) {
+    dots.forEach(d => d.className = 'step-dot done');
+    labels.forEach(l => l.className = 'step-label done');
+  }
+}
+
+function resetSteps() {
+  document.querySelectorAll('.step-dot').forEach(d => d.className = 'step-dot');
+  document.querySelectorAll('.step-label').forEach(l => l.className = 'step-label');
+}
+
+function setStatus(status) {
+  const badge = document.getElementById('statusBadge');
+  const map = {
+    idle:    ['대기 중', 'status-idle'],
+    running: ['실행 중...', 'status-running'],
+    done:    ['완료!', 'status-done'],
+    error:   ['오류 발생', 'status-error'],
+    stopped: ['중지됨', 'status-stopped'],
+  };
+  const [text, cls] = map[status] || map.idle;
+  badge.textContent = text;
+  badge.className = 'status ' + cls;
+}
+
+// 파이프라인 실행
+async function runPipeline() {
+  if (!selectedFile) { alert('파일을 먼저 선택하세요.'); return; }
+
+  const logEl = document.getElementById('log');
+  logEl.textContent = '';
+  resetSteps();
+  setStatus('running');
+
+  document.getElementById('btnRun').disabled = true;
+  document.getElementById('btnStop').disabled = false;
+
+  const body = {
+    file: selectedFile,
+    lang: document.getElementById('srcLang').value || null,
+    targetLang: document.getElementById('tgtLang').value,
+    startFrom: parseInt(document.getElementById('startFrom').value),
+    forceTranslate: document.getElementById('forceTranslate').checked,
+    skipTts: document.getElementById('skipTts').checked,
+    chat: document.getElementById('chat').checked,
+  };
+
+  const res = await fetch('/api/run', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+  const { jobId } = await res.json();
+  currentJobId = jobId;
+
+  // SSE 로그 스트리밍
+  const evtSource = new EventSource('/api/logs/' + jobId);
+  evtSource.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (data.type === 'log') {
+      logEl.textContent += data.msg;
+      logEl.scrollTop = logEl.scrollHeight;
+      updateSteps(data.msg);
+    } else if (data.type === 'done') {
+      evtSource.close();
+      setStatus(data.status);
+      document.getElementById('btnRun').disabled = false;
+      document.getElementById('btnStop').disabled = true;
+      loadOutputs();
+    } else if (data.type === 'error') {
+      evtSource.close();
+      setStatus('error');
+    }
+  };
+}
+
+// 중지
+async function stopPipeline() {
+  if (currentJobId) {
+    await fetch('/api/stop/' + currentJobId, { method: 'POST' });
+    setStatus('stopped');
+    document.getElementById('btnRun').disabled = false;
+    document.getElementById('btnStop').disabled = true;
+  }
+}
+
+// 결과물 로드
+async function loadOutputs() {
+  const res = await fetch('/api/output-files');
+  const outputs = await res.json();
+  const el = document.getElementById('outputList');
+  if (outputs.length === 0) {
+    el.innerHTML = '<span style="color:var(--dim)">결과물이 없습니다.</span>';
+    return;
+  }
+  el.innerHTML = '';
+  outputs.forEach(group => {
+    const details = document.createElement('details');
+    details.className = 'output-group';
+    details.open = true;
+    const summary = document.createElement('summary');
+    summary.textContent = group.name;
+    details.appendChild(summary);
+    const ul = document.createElement('ul');
+    ul.className = 'output-files';
+    group.files.forEach(f => {
+      const li = document.createElement('li');
+      li.textContent = f;
+      ul.appendChild(li);
+    });
+    details.appendChild(ul);
+    el.appendChild(details);
+  });
+}
+
+// 초기 로드
+loadFiles();
+loadOutputs();
+</script>
+</body>
+</html>

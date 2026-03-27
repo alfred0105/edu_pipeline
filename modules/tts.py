@@ -22,6 +22,7 @@ F5-TTS 특징:
 """
 
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 
@@ -57,7 +58,7 @@ class TTSProcessor:
         self,
         ref_audio_path: str | None = None,
         ref_text: str | None = None,
-        nfe_step: int = 16,
+        nfe_step: int = 12,
     ):
         logger.info(f"[TTS] F5-TTS 로드 중  device={cfg.tts.device}  nfe_step={nfe_step}")
         log_vram("TTS 로드 전")
@@ -68,6 +69,8 @@ class TTSProcessor:
         self._ref_audio = ref_audio_path
         self._ref_text  = ref_text or ""
         self._nfe_step  = nfe_step
+        # F5-TTS 내부 print() 억제용 (세그먼트마다 파일 열기 방지)
+        self._devnull   = open(os.devnull, "w")
 
         if not ref_audio_path:
             self._ref_audio, self._ref_text = _get_default_ref()
@@ -77,26 +80,46 @@ class TTSProcessor:
 
         log_vram("TTS 로드 후")
 
+    # F5-TTS 내부 print/show_info 억제용
+    @staticmethod
+    def _noop(*args, **kwargs):
+        pass
+
     # ── 단일 세그먼트 GPU 추론 (wav 반환) ────────────────────────────────
     def _infer(self, text: str, nfe_step: int | None = None):
         """GPU 추론만 수행하고 (wav, sr)을 반환합니다."""
-        wav, sr, _ = self._tts.infer(
-            ref_file=self._ref_audio,
-            ref_text=self._ref_text,
-            gen_text=text,
-            target_rms=0.1,
-            nfe_step=nfe_step or self._nfe_step,
-        )
-        return wav, sr
+        import sys
+
+        # F5-TTS 내부 print() 억제 (ref_text, gen_text 매 호출 출력 방지)
+        old_stdout = sys.stdout
+        sys.stdout = self._devnull
+        try:
+            wav, sr, _ = self._tts.infer(
+                ref_file=self._ref_audio,
+                ref_text=self._ref_text,
+                gen_text=text,
+                target_rms=0.1,
+                nfe_step=nfe_step or self._nfe_step,
+                show_info=self._noop,  # "Generating audio in N batches..." 억제
+                progress=None,         # tqdm 비활성화
+            )
+            return wav, sr
+        except Exception as e:
+            logger.error(f"[TTS] _infer 실패: {e}", exc_info=True)
+            raise
+        finally:
+            sys.stdout = old_stdout
 
     @staticmethod
     def _adaptive_nfe(text: str, base_nfe: int) -> int:
         """텍스트 길이에 따라 nfe_step을 조절합니다. 짧으면 적은 스텝으로도 충분."""
         length = len(text)
-        if length < 10:
-            return max(8, base_nfe // 2)
-        if length < 30:
-            return max(8, base_nfe * 3 // 4)
+        if length < 8:
+            return max(6, base_nfe // 3)    # 극히 짧은 텍스트: 1/3
+        if length < 20:
+            return max(6, base_nfe // 2)    # 짧은 텍스트: 1/2
+        if length < 40:
+            return max(8, base_nfe * 3 // 4)  # 보통: 3/4
         return base_nfe
 
     # ── CPU 후처리 (스트레칭 + 파일 저장) — tempfile I/O 제거 ─────────────
@@ -136,9 +159,16 @@ class TTSProcessor:
         Returns:
             segments에 'tts_path' 필드가 추가된 리스트
         """
+        import time
+
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         total = len(segments)
         result = [None] * total
+        success_count = 0
+        t_start = time.time()
+
+        # 진행률 로그 간격: 10개 또는 10% 단위
+        log_interval = max(1, min(10, total // 10))
 
         # CPU 후처리 스레드풀 (GPU 추론과 오버랩)
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -149,17 +179,25 @@ class TTSProcessor:
                 duration = seg["end"] - seg["start"]
                 out_path = str(Path(output_dir) / f"seg_{i:04d}.wav")
 
-                # 빈 텍스트 또는 극히 짧은 구간은 무음 처리
-                if not text.strip() or duration < 0.1:
-                    logger.info(f"[TTS] {i + 1}/{total}  건너뜀 (빈 텍스트/짧은 구간)")
+                # 빈 텍스트 또는 짧은 구간은 무음 처리 (TTS 품질이 낮고 시간만 소모)
+                if not text.strip() or duration < 0.5:
                     result[i] = {**seg, "tts_path": None}
                     continue
 
-                logger.info(
-                    f"[TTS] {i + 1}/{total}  "
-                    f"duration={duration:.1f}s  "
-                    f"text={text[:45]}{'...' if len(text) > 45 else ''}"
-                )
+                # 진행률 표시 (log_interval마다 + 첫 번째 + 마지막)
+                if i == 0 or (i + 1) % log_interval == 0 or i == total - 1:
+                    elapsed = time.time() - t_start
+                    if success_count > 0:
+                        eta = elapsed / success_count * (total - i)
+                        eta_str = f"  ETA {eta:.0f}s"
+                    else:
+                        eta_str = ""
+                    logger.info(
+                        f"[TTS] {i + 1}/{total} ({(i + 1) * 100 // total}%)  "
+                        f"성공={success_count}  "
+                        f"경과={elapsed:.0f}s{eta_str}  "
+                        f"text={text[:35]}{'...' if len(text) > 35 else ''}"
+                    )
 
                 # 이전 세그먼트 CPU 후처리 완료 확인 (2개 앞서 대기)
                 if i - 2 in pending:
@@ -178,6 +216,7 @@ class TTSProcessor:
                         self._postprocess, wav, sr, duration, out_path
                     )
                     result[i] = {**seg, "tts_path": out_path}
+                    success_count += 1
                 except Exception as e:
                     logger.error(f"[TTS] 세그먼트 {i} 합성 실패: {e}")
                     result[i] = {**seg, "tts_path": None}
@@ -191,12 +230,14 @@ class TTSProcessor:
                     result[idx] = {**result[idx], "tts_path": None}
 
         successful = sum(1 for r in result if r and r.get("tts_path"))
-        logger.info(f"[TTS] 합성 완료: {successful}/{total}개 성공")
+        elapsed_total = time.time() - t_start
+        logger.info(f"[TTS] 합성 완료: {successful}/{total}개 성공  총 {elapsed_total:.1f}초 ({elapsed_total / 60:.1f}분)")
         return result
 
     # ── VRAM 해제 ────────────────────────────────────────────────────────
     def unload(self) -> None:
         del self._tts
+        self._devnull.close()
         clear_vram()
         log_vram("TTS 해제 후")
         logger.info("[TTS] 모델 해제 완료")

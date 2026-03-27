@@ -74,6 +74,7 @@ class EmbeddingProcessor:
         Returns:
             각 텍스트에 대한 float 벡터 리스트 (L2 정규화됨)
         """
+        import time
         import torch
         import torch.nn.functional as F
 
@@ -81,8 +82,11 @@ class EmbeddingProcessor:
 
         all_vectors: list[list[float]] = []
         batch_size = cfg.embed.batch_size
+        total = len(texts)
+        total_batches = (total + batch_size - 1) // batch_size
+        t_start = time.time()
 
-        for i in range(0, len(texts), batch_size):
+        for batch_idx, i in enumerate(range(0, total, batch_size)):
             batch = [prefix + t for t in texts[i : i + batch_size]]
             encoded = self._tokenizer(
                 batch,
@@ -98,6 +102,15 @@ class EmbeddingProcessor:
             pooled = self._mean_pool(output.last_hidden_state, encoded["attention_mask"])
             normalized = F.normalize(pooled, p=2, dim=1)
             all_vectors.extend(normalized.cpu().float().tolist())
+
+            # 진행률 (첫 배치, 마지막, 또는 5배치마다)
+            done = min(i + batch_size, total)
+            if batch_idx == 0 or batch_idx == total_batches - 1 or (batch_idx + 1) % 5 == 0:
+                elapsed = time.time() - t_start
+                logger.info(
+                    f"[Embed] {done}/{total} ({done * 100 // total}%)  "
+                    f"배치 {batch_idx + 1}/{total_batches}  경과={elapsed:.1f}s"
+                )
 
         return all_vectors
 
