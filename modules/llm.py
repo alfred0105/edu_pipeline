@@ -3,17 +3,19 @@ modules/llm.py
 ────────────────────────────────────────────────────────────────────
 LLM 모듈 — 번역 및 연령별 수준 맞춤 요약.
 
-PC  (CUDA 8GB):
+PC  (CUDA):
     1순위: llama.cpp (GGUF Q4_K_M) — GPU 가속, transformers 대비 2~3배 빠름
     2순위: transformers + bitsandbytes NF4 (llama.cpp 미설치 시 폴백)
 Mac (Apple Silicon): mlx-lm (Apple MLX 프레임워크)
 
-모델: Qwen/Qwen3-4B
-  - GGUF Q4_K_M VRAM ~2.3 GB / BnB NF4 VRAM ~2.5 GB
-  - 한국어·영어·일본어·중국어 다국어 지원 우수
+모델: google/gemma-4-26b-it (MoE: 26B 전체 / 4B 활성 파라미터)
+  - GGUF Q4_K_M: 가중치 ~14GB 저장, 추론 시 ~4B 활성 (GPU 부분 오프로드 가능)
+  - n_gpu_layers=-1 이면 전체 GPU 시도; VRAM 부족 시 정수로 조정하세요.
+  - 뛰어난 한국어·영어·다국어 지원
 """
 
 import logging
+import os
 import re
 from config import cfg, MODE
 from utils.memory import clear_vram, log_vram
@@ -54,20 +56,12 @@ LANG_NAMES = {
 }
 
 
-# ── Qwen3 후처리 ──────────────────────────────────────────────────────────────
-def _strip_think_tags(text: str) -> str:
-    """Qwen3의 <think>...</think> 태그를 제거합니다."""
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-
-
-# ── Qwen3 채팅 템플릿 (llama.cpp용) ──────────────────────────────────────────
-def _build_qwen3_prompt(user_msg: str) -> str:
-    """Qwen3 채팅 템플릿을 수동으로 구성합니다.
-    thinking 블록을 미리 닫아서 <think> 토큰 낭비를 방지합니다."""
+# ── Gemma 채팅 템플릿 (llama.cpp용) ─────────────────────────────────────────
+def _build_gemma_prompt(user_msg: str) -> str:
+    """Gemma 채팅 템플릿을 수동으로 구성합니다."""
     return (
-        "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
-        f"<|im_start|>user\n/no_think\n{user_msg}<|im_end|>\n"
-        "<|im_start|>assistant\n<think>\n</think>\n"
+        f"<start_of_turn>user\n{user_msg}<end_of_turn>\n"
+        "<start_of_turn>model\n"
     )
 
 
@@ -80,13 +74,41 @@ def _setup_dll_dirs():
         os.add_dll_directory(os.path.join(os.path.dirname(torch.__file__), 'lib'))
     except Exception:
         pass
-    cuda_bin = r'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin'
-    if os.path.isdir(cuda_bin):
-        os.add_dll_directory(cuda_bin)
+    # 1순위: CUDA_PATH 환경변수 (사용자 설치 경로를 신뢰)
+    cuda_path_env = os.environ.get("CUDA_PATH") or os.environ.get("CUDA_HOME")
+    if cuda_path_env:
+        cuda_bin = os.path.join(cuda_path_env, "bin")
+        if os.path.isdir(cuda_bin):
+            try:
+                os.add_dll_directory(cuda_bin)
+                logger.debug(f"[LLM] CUDA DLL 경로 등록 (env): {cuda_bin}")
+            except Exception as e:
+                logger.debug(f"[LLM] CUDA DLL 경로 등록 실패: {e}")
+        return
+    # 2순위: 표준 설치 경로에서 버전 디렉토리 자동 스캔 (최신 버전 우선)
+    toolkit_base = r'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
+    if os.path.isdir(toolkit_base):
+        try:
+            versions = sorted(
+                (d for d in os.listdir(toolkit_base)
+                 if os.path.isdir(os.path.join(toolkit_base, d))),
+                reverse=True,
+            )
+            for ver in versions:
+                cuda_bin = os.path.join(toolkit_base, ver, "bin")
+                if os.path.isdir(cuda_bin):
+                    try:
+                        os.add_dll_directory(cuda_bin)
+                        logger.debug(f"[LLM] CUDA DLL 경로 등록 (scan {ver}): {cuda_bin}")
+                    except Exception as e:
+                        logger.debug(f"[LLM] CUDA DLL 등록 실패 ({cuda_bin}): {e}")
+                    break
+        except Exception as e:
+            logger.debug(f"[LLM] CUDA 디렉토리 스캔 실패: {e}")
 
 
 def _check_llamacpp() -> bool:
-    """llama-cpp-python이 Qwen3를 지원하는지 빠르게 확인합니다.
+    """llama-cpp-python 설치 여부와 GGUF 파일 존재 여부를 빠르게 확인합니다.
     실제 모델 로드 없이 import + GGUF 파일 존재 여부만 체크합니다."""
     _setup_dll_dirs()
     try:
@@ -113,7 +135,6 @@ def _check_llamacpp() -> bool:
 # ── PC 백엔드 1: llama.cpp (GGUF) ────────────────────────────────────────────
 def _load_pc_llamacpp():
     """llama.cpp GGUF 모델 로드 (GPU 가속, transformers 대비 2~3배 빠름)"""
-    import os
     from huggingface_hub import hf_hub_download
     from llama_cpp import Llama
 
@@ -135,18 +156,16 @@ def _load_pc_llamacpp():
 
 
 def _infer_llamacpp(model, prompt: str, max_tokens: int) -> str:
-    """llama.cpp 추론 — thinking 이미 닫힌 상태에서 시작"""
-    full_prompt = _build_qwen3_prompt(prompt)
+    """llama.cpp 추론 — Gemma 채팅 포맷"""
+    full_prompt = _build_gemma_prompt(prompt)
     output = model(
         full_prompt,
         max_tokens=max_tokens,
         temperature=cfg.llm.temperature,
-        top_k=1,
-        stop=["<|im_end|>", "<|endoftext|>", "<think>"],
+        stop=["<end_of_turn>", "<eos>"],
         echo=False,
     )
-    text = output["choices"][0]["text"].strip()
-    return _strip_think_tags(text)
+    return output["choices"][0]["text"].strip()
 
 
 # ── PC 백엔드 2: transformers + bitsandbytes NF4 (폴백) ──────────────────────
@@ -163,7 +182,14 @@ def _load_pc_bnb():
         bnb_4bit_use_double_quant=True,
         bnb_4bit_quant_type="nf4",
     )
-    tokenizer = AutoTokenizer.from_pretrained(cfg.llm.model_id, trust_remote_code=True)
+    # transformers의 _patch_mistral_regex()가 is_base_mistral()로 HF API를 호출함.
+    # 로컬 경로를 직접 넘기면 _is_local=True → is_base_mistral() 호출 자체가 스킵됨.
+    from huggingface_hub import snapshot_download
+    try:
+        _model_path = snapshot_download(cfg.llm.model_id, local_files_only=True)
+    except Exception:
+        _model_path = cfg.llm.model_id
+    tokenizer = AutoTokenizer.from_pretrained(_model_path, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
         cfg.llm.model_id,
         quantization_config=bnb_config,
@@ -175,21 +201,20 @@ def _load_pc_bnb():
     model.eval()
     # stop 토큰 ID 캐싱 (매 호출 변환 방지)
     eos_ids = [tokenizer.eos_token_id]
-    im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
-    if isinstance(im_end_id, int) and im_end_id != tokenizer.unk_token_id:
-        eos_ids.append(im_end_id)
+    end_of_turn_id = tokenizer.convert_tokens_to_ids("<end_of_turn>")
+    if isinstance(end_of_turn_id, int) and end_of_turn_id != tokenizer.unk_token_id:
+        eos_ids.append(end_of_turn_id)
 
     return "bnb", tokenizer, model, eos_ids
 
 
 def _infer_bnb(tokenizer, model, eos_ids: list[int], prompt: str, max_tokens: int) -> str:
-    """transformers 추론 — thinking 블록을 미리 닫아 토큰 낭비 방지"""
+    """transformers 추론 — Gemma 채팅 포맷"""
     import torch
-    messages = [{"role": "user", "content": f"/no_think\n{prompt}"}]
+    messages = [{"role": "user", "content": prompt}]
     text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+        messages, tokenize=False, add_generation_prompt=True
     )
-    text += "<think>\n</think>\n"
     inputs = tokenizer(text, return_tensors="pt").to("cuda")
 
     with torch.inference_mode():
@@ -198,27 +223,134 @@ def _infer_bnb(tokenizer, model, eos_ids: list[int], prompt: str, max_tokens: in
             max_new_tokens=max_tokens,
             do_sample=True,
             temperature=cfg.llm.temperature,
-            top_k=1,
             eos_token_id=eos_ids,
             pad_token_id=tokenizer.eos_token_id,
         )
     generated = out[0][inputs["input_ids"].shape[1]:]
-    decoded = tokenizer.decode(generated, skip_special_tokens=True).strip()
-    return _strip_think_tags(decoded)
+    return tokenizer.decode(generated, skip_special_tokens=True).strip()
+
+
+# ── Ollama 백엔드 ────────────────────────────────────────────────────────────
+def _check_ollama() -> bool:
+    """Ollama가 실행 중이고 모델이 로드돼 있는지 확인합니다."""
+    try:
+        import urllib.request, json
+        url = f"{cfg.llm.ollama_url}/api/tags"
+        with urllib.request.urlopen(url, timeout=3) as r:
+            data = json.loads(r.read())
+        models = [m["name"] for m in data.get("models", [])]
+        # gemma4:27b, gemma4:27b-instruct-q4_K_M 등 prefix 매칭
+        base = cfg.llm.ollama_model.split(":")[0]
+        found = any(base in m for m in models)
+        if not found:
+            logger.warning(f"[LLM] Ollama 실행 중이나 {cfg.llm.ollama_model} 없음. 목록: {models}")
+        return found
+    except Exception as e:
+        logger.debug(f"[LLM] Ollama 미실행: {e}")
+        return False
+
+
+def _ollama_payload(
+    prompt: str,
+    max_tokens: int,
+    stream: bool,
+    system: str | None = None,
+    history: list | None = None,
+) -> bytes:
+    import json
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    if history:
+        messages.extend(history)   # [{"role": "user"|"assistant", "content": str}, ...]
+    messages.append({"role": "user", "content": prompt})
+    return json.dumps({
+        "model": cfg.llm.ollama_model,
+        "messages": messages,
+        "stream": stream,
+        "think": False,
+        "options": {
+            "temperature": cfg.llm.temperature,
+            "num_predict": max_tokens,
+            "num_ctx": 4096,
+            "num_batch": 512,
+        },
+    }, ensure_ascii=False).encode("utf-8")
+
+
+def _infer_ollama(prompt: str, max_tokens: int,
+                  system: str | None = None,
+                  history: list | None = None) -> str:
+    """Ollama /api/chat으로 추론합니다."""
+    import urllib.request, json
+    req = urllib.request.Request(
+        f"{cfg.llm.ollama_url}/api/chat",
+        data=_ollama_payload(prompt, max_tokens, stream=False,
+                             system=system, history=history),
+        headers={"Content-Type": "application/json; charset=utf-8"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=300) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return data.get("message", {}).get("content", "").strip()
+    except Exception as e:
+        logger.error(f"[LLM] Ollama 추론 실패: {e}", exc_info=True)
+        raise
+
+
+def _infer_ollama_stream(prompt: str, max_tokens: int,
+                         system: str | None = None,
+                         history: list | None = None):
+    """Ollama /api/chat 스트리밍 — 토큰 단위 yield"""
+    import urllib.request, json
+    req = urllib.request.Request(
+        f"{cfg.llm.ollama_url}/api/chat",
+        data=_ollama_payload(prompt, max_tokens, stream=True,
+                             system=system, history=history),
+        headers={"Content-Type": "application/json; charset=utf-8"},
+    )
+    logger.info(f"[LLM] Ollama 스트리밍 시작  model={cfg.llm.ollama_model}  max_tokens={max_tokens}")
+    try:
+        with urllib.request.urlopen(req, timeout=300) as r:
+            for line in r:
+                if not line.strip():
+                    continue
+                data = json.loads(line.decode("utf-8"))
+                if "error" in data:
+                    logger.error(f"[LLM] Ollama 오류: {data['error']}")
+                    raise RuntimeError(data["error"])
+                token = data.get("message", {}).get("content", "")
+                if token:
+                    yield token
+                if data.get("done"):
+                    break
+    except Exception as e:
+        logger.error(f"[LLM] Ollama 스트리밍 실패: {e}", exc_info=True)
+        raise
 
 
 # ── PC 로드 (자동 선택) ──────────────────────────────────────────────────────
 def _load_pc():
-    """PC 모델 로드: llama.cpp 우선, 실패 시 bitsandbytes 폴백"""
-    if _check_llamacpp():
+    """PC 모델 로드: Ollama → llama.cpp → bitsandbytes 순으로 시도"""
+    # 1순위: Ollama (외부 프로세스, 로드 없음)
+    if _check_ollama():
+        logger.info(f"[LLM] Ollama 백엔드 사용: {cfg.llm.ollama_model}")
+        return "ollama", None, None, None
+
+    # 2순위: llama.cpp
+    _setup_dll_dirs()
+    try:
+        from llama_cpp import Llama  # noqa: F401
         try:
             backend, model, _ = _load_pc_llamacpp()
-            return backend, None, model, None  # llamacpp는 tokenizer/eos_ids 불필요
+            return backend, None, model, None
         except Exception as e:
             logger.warning(f"[LLM] llama.cpp 로드 실패 → bitsandbytes 폴백: {e}")
-    else:
-        logger.info("[LLM] llama.cpp 미설치 또는 미지원 → bitsandbytes 사용")
-    return _load_pc_bnb()  # (backend, tokenizer, model, eos_ids)
+    except (ImportError, RuntimeError):
+        logger.info("[LLM] llama.cpp 미설치 → bitsandbytes 사용")
+
+    # 3순위: bitsandbytes
+    return _load_pc_bnb()
 
 
 # ── Mac 백엔드 (mlx-lm) ──────────────────────────────────────────────────────
@@ -230,23 +362,37 @@ def _load_mac(model_id: str):
 
 def _infer_mac(tokenizer, model, prompt: str, max_tokens: int) -> str:
     from mlx_lm import generate
-    messages = [{"role": "user", "content": f"/no_think\n{prompt}"}]
+    messages = [{"role": "user", "content": prompt}]
     text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+        messages, tokenize=False, add_generation_prompt=True
     )
-    text += "<think>\n</think>\n"
-    result = generate(
+    return generate(
         model, tokenizer, prompt=text, max_tokens=max_tokens,
         temp=cfg.llm.temperature, verbose=False,
-    )
-    return _strip_think_tags(result)
+    ).strip()
 
 
 # ── 번역 파싱 ────────────────────────────────────────────────────────────────
+# 지원 형식: "1. text", "1) text", "1: text", "**1.** text"
 _NUMBERED_LINE_RE = re.compile(
-    r"(\d+)\s*[.\)]\s*(.+?)(?=\n\s*\d+\s*[.\)]|\Z)",
+    r"\*{0,2}(\d+)\*{0,2}\s*[.):\-]\s*\*{0,2}\s*(.+?)(?=\n\s*\*{0,2}\d+\*{0,2}\s*[.):\-]|\Z)",
     re.DOTALL,
 )
+
+
+def _parse_numbered_fallback(raw: str, n: int) -> dict[int, str]:
+    """
+    정규식 파싱이 부분 실패했을 때 줄 수 기반으로 번역문을 추출합니다.
+    모델이 번호 없이 줄바꿈만으로 구분할 때도 동작합니다.
+    """
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    cleaned = []
+    for ln in lines:
+        m = re.match(r"^\*{0,2}\d+\*{0,2}\s*[.):\-]\s*\*{0,2}\s*(.*)", ln)
+        cleaned.append(m.group(1).strip() if m else ln)
+    if len(cleaned) == n:
+        return {i: t for i, t in enumerate(cleaned)}
+    return {}
 
 # ── 요약 파싱 (3개 연령별 블록 분리) ──────────────────────────────────────────
 _SECTION_RE = re.compile(
@@ -278,13 +424,17 @@ class LLMProcessor:
         logger.info(f"[LLM] 모델 준비 완료  backend={self._backend}")
 
     # ── 공용 추론 API ────────────────────────────────────────────────────
-    def generate(self, prompt: str, max_tokens: int | None = None) -> str:
+    def generate(self, prompt: str, max_tokens: int | None = None,
+                system: str | None = None,
+                history: list | None = None) -> str:
         """프롬프트를 받아 텍스트를 생성합니다."""
         if not self._loaded:
             raise RuntimeError("[LLM] 모델이 이미 해제되었습니다. 새 인스턴스를 생성하세요.")
         mt = max_tokens or cfg.llm.max_new_tokens
 
-        if self._backend == "llamacpp":
+        if self._backend == "ollama":
+            return _infer_ollama(prompt, mt, system=system, history=history)
+        elif self._backend == "llamacpp":
             return _infer_llamacpp(self._model, prompt, mt)
         elif self._backend == "bnb":
             return _infer_bnb(self._tokenizer, self._model, self._eos_ids, prompt, mt)
@@ -325,7 +475,16 @@ class LLMProcessor:
             logger.info(f"[LLM] 번역 배치 {batch_start // batch_size + 1}/"
                         f"{(total + batch_size - 1) // batch_size}  ({n}개)")
 
-            raw = self.generate(prompt, 256 * n)
+            try:
+                raw = self.generate(prompt, 256 * n)
+            except Exception as e:
+                logger.error(
+                    f"[LLM] 번역 배치 {batch_start // batch_size + 1} 실패: {e}"
+                    f" — 해당 배치 {n}개를 원문으로 유지합니다."
+                )
+                for seg in batch:
+                    result.append({**seg, "translated": seg["text"]})
+                continue
 
             parsed = {}
             for m in _NUMBERED_LINE_RE.finditer(raw):
@@ -335,7 +494,16 @@ class LLMProcessor:
 
             parsed_count = len(parsed)
             if parsed_count < n:
-                logger.warning(f"[LLM] 번역 파싱 {parsed_count}/{n}개만 성공 — 실패분은 원문 유지")
+                logger.warning(
+                    f"[LLM] 번역 파싱 {parsed_count}/{n}개만 성공 — "
+                    f"줄 수 기반 폴백 파서 시도"
+                )
+                fallback = _parse_numbered_fallback(raw, n)
+                if len(fallback) > parsed_count:
+                    parsed = fallback
+                    logger.info(f"[LLM] 폴백 파서로 {len(parsed)}/{n}개 복원")
+                else:
+                    logger.warning(f"[LLM] 폴백도 실패 — {n - len(parsed)}개 원문 유지")
 
             for i, seg in enumerate(batch):
                 translated = parsed.get(i, seg["text"])
@@ -345,6 +513,63 @@ class LLMProcessor:
         return result
 
     # ── 연령별 요약 (단건) ────────────────────────────────────────────────
+    def generate_title(self, text: str, max_tokens: int = 60) -> str:
+        """콘텐츠 앞부분을 보고 짧은 제목 생성 (10자 내외)."""
+        prompt = (
+            "다음 교육 콘텐츠의 핵심 주제를 20자 이내 한국어 제목으로만 출력하세요.\n"
+            "예: '양자역학 기초 개념과 파동함수'\n"
+            "주의: 제목만 출력하고 다른 설명은 쓰지 마세요.\n\n"
+            f"내용:\n{text[:600]}"
+        )
+        return self.generate(prompt, max_tokens).strip().strip('"\'').split('\n')[0]
+
+    def generate_topic(self, text: str, max_tokens: int = 30) -> str:
+        """콘텐츠의 주제 카테고리를 한국어 단어/짧은 구로 생성 (라이브러리 분류용).
+
+        예: '물리학', '한국 역사', '파이썬 프로그래밍', '유기화학', '미적분'
+        """
+        prompt = (
+            "다음 콘텐츠의 학문 분야나 주제를 나타내는 카테고리를 10자 이내 한국어로만 출력하세요.\n"
+            "예시: 물리학 / 한국 역사 / 파이썬 프로그래밍 / 유기화학 / 미적분 / 영어 문법\n"
+            "카테고리 단어만 출력하고 다른 설명은 쓰지 마세요.\n\n"
+            f"내용:\n{text[:500]}"
+        )
+        result = self.generate(prompt, max_tokens).strip().strip('"\'').split('\n')[0]
+        # 최대 20자로 제한
+        return result[:20] if result else "기타"
+
+    def generate_topics(self, text: str, max_tokens: int = 60) -> list[str]:
+        """다중 분야 태그 생성. 같은 콘텐츠가 여러 분야에 속할 수 있음.
+
+        예: '전자현미경 렌즈' → ['광학', '전자현미경', '물리학']
+        """
+        prompt = (
+            "다음 콘텐츠에 해당하는 학문 분야 또는 세부 주제 태그를 1~4개 생성하세요.\n"
+            "쉼표(,)로만 구분하고 다른 설명은 쓰지 마세요. 각 태그는 10자 이내 한국어 명사구.\n"
+            "예: 광학, 전자현미경, 물리학\n\n"
+            f"내용:\n{text[:600]}"
+        )
+        raw = self.generate(prompt, max_tokens).strip().strip('"\'').split('\n')[0]
+        tags = [t.strip()[:20] for t in raw.split(',') if t.strip()]
+        # 중복 제거 (순서 유지) + 최대 4개
+        seen, out = set(), []
+        for t in tags:
+            if t and t not in seen:
+                seen.add(t); out.append(t)
+            if len(out) >= 4:
+                break
+        return out or ["기타"]
+
+    def generate_summary(self, text: str, max_tokens: int = 200) -> str:
+        """콘텐츠가 어떤 내용인지 2~3문장으로 중립 설명 생성 (라이브러리 카드용)."""
+        prompt = (
+            "다음 콘텐츠가 어떤 주제와 내용을 다루는지 2~3문장으로 간결하게 설명하세요.\n"
+            "연령이나 난이도 언급 없이, 핵심 주제와 다루는 내용만 사실적으로 서술하세요.\n"
+            "제목·부연 설명·글머리 기호 없이 문장만 출력하세요.\n\n"
+            f"내용:\n{text}"
+        )
+        return self.generate(prompt, max_tokens).strip()
+
     def summarize_by_age(
         self,
         text: str,
@@ -380,12 +605,48 @@ class LLMProcessor:
             results[age] = self.summarize_by_age(text, age, max_tokens=800)
         return results
 
+    # ── 스트리밍 추론 ────────────────────────────────────────────────────────
+    def generate_stream(self, prompt: str, max_tokens: int | None = None,
+                        system: str | None = None,
+                        history: list | None = None):
+        """
+        토큰을 스트리밍으로 생성합니다.
+        llama.cpp: 실시간 토큰 단위 yield
+        bnb/mlx:  전체 생성 후 청크로 나눠 yield (폴백)
+        """
+        if not self._loaded:
+            raise RuntimeError("[LLM] 모델이 이미 해제되었습니다.")
+        mt = max_tokens or cfg.llm.max_new_tokens
+
+        if self._backend == "ollama":
+            yield from _infer_ollama_stream(prompt, mt, system=system, history=history)
+        elif self._backend == "llamacpp":
+            full_prompt = _build_gemma_prompt(prompt)
+            for chunk in self._model(
+                full_prompt, max_tokens=mt,
+                temperature=cfg.llm.temperature,
+                stop=["<end_of_turn>", "<eos>"],
+                echo=False, stream=True,
+            ):
+                token = chunk["choices"][0]["text"]
+                if token:
+                    yield token
+        else:
+            # bnb/mlx 폴백: 전체 생성 후 20자 단위 청크
+            full = self.generate(prompt, mt)
+            size = 20
+            for i in range(0, len(full), size):
+                yield full[i:i + size]
+
     # ── VRAM 해제 ───────────────────────────────────────────────────────────
     def unload(self) -> None:
         """모델을 메모리에서 완전히 해제합니다."""
         if not self._loaded:
             return
         self._loaded = False
+        if self._backend == "ollama":
+            logger.info("[LLM] Ollama 백엔드 — 해제 불필요 (외부 프로세스)")
+            return
         import torch, gc
         # 모델의 모든 파라미터를 CPU로 이동 후 삭제 (CUDA 메모리 즉시 반환)
         if self._model is not None and hasattr(self._model, 'cpu'):

@@ -1,390 +1,409 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>edu_pipeline</title>
-<style>
-  :root {
-    --bg: #0f0f23; --bg2: #1a1a3e; --bg3: #252552;
-    --fg: #e2e2f0; --dim: #8888aa; --accent: #7c9cff;
-    --green: #7ddf7d; --red: #ff7b7b; --orange: #ffb86c;
-    --border: #333366; --radius: 10px;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    font-family: 'Segoe UI', '맑은 고딕', sans-serif;
-    background: var(--bg); color: var(--fg);
-    min-height: 100vh; padding: 0;
-  }
-
-  /* 헤더 */
-  header {
-    background: linear-gradient(135deg, var(--bg2), var(--bg3));
-    padding: 28px 32px 20px; border-bottom: 1px solid var(--border);
-  }
-  header h1 { font-size: 1.6rem; font-weight: 700; }
-  header p  { color: var(--dim); margin-top: 4px; font-size: 0.9rem; }
-
-  .container { max-width: 900px; margin: 0 auto; padding: 24px 20px; }
-
-  /* 카드 */
-  .card {
-    background: var(--bg2); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 20px; margin-bottom: 16px;
-  }
-  .card-title {
-    font-size: 0.85rem; font-weight: 600; color: var(--accent);
-    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px;
-  }
-
-  /* 파일 선택 */
-  .file-list { display: flex; flex-wrap: wrap; gap: 8px; }
-  .file-item {
-    padding: 8px 16px; background: var(--bg3); border: 1px solid var(--border);
-    border-radius: 6px; cursor: pointer; font-size: 0.9rem; transition: all 0.2s;
-  }
-  .file-item:hover { border-color: var(--accent); }
-  .file-item.selected { border-color: var(--accent); background: rgba(124,156,255,0.15); color: #fff; }
-
-  /* 옵션 그리드 */
-  .opt-grid {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
-  }
-  @media (max-width: 600px) { .opt-grid { grid-template-columns: 1fr; } }
-
-  .opt-group label {
-    display: block; font-size: 0.8rem; color: var(--dim);
-    margin-bottom: 4px; font-weight: 500;
-  }
-  select, input[type="text"] {
-    width: 100%; padding: 8px 12px; background: var(--bg);
-    border: 1px solid var(--border); border-radius: 6px;
-    color: var(--fg); font-size: 0.9rem; outline: none;
-  }
-  select:focus, input:focus { border-color: var(--accent); }
-
-  /* 체크박스 */
-  .checks { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; }
-  .checks label {
-    display: flex; align-items: center; gap: 6px;
-    font-size: 0.85rem; color: var(--fg); cursor: pointer;
-  }
-  .checks input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
-
-  /* 버튼 */
-  .btn-row { display: flex; gap: 10px; margin-top: 4px; }
-  .btn {
-    padding: 12px 28px; border: none; border-radius: 8px;
-    font-size: 1rem; font-weight: 700; cursor: pointer; transition: all 0.2s;
-  }
-  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn-run  { background: var(--green); color: #111; }
-  .btn-run:hover:not(:disabled) { background: #6fcf6f; }
-  .btn-stop { background: var(--red); color: #111; }
-  .btn-stop:hover:not(:disabled) { background: #ff6060; }
-
-  /* 상태 뱃지 */
-  .status {
-    display: inline-block; padding: 4px 12px; border-radius: 20px;
-    font-size: 0.8rem; font-weight: 600; margin-left: auto;
-  }
-  .status-idle    { background: var(--bg3); color: var(--dim); }
-  .status-running { background: rgba(125,223,125,0.15); color: var(--green); }
-  .status-done    { background: rgba(125,223,125,0.25); color: var(--green); }
-  .status-error   { background: rgba(255,123,123,0.15); color: var(--red); }
-  .status-stopped { background: rgba(255,184,108,0.15); color: var(--orange); }
-
-  /* 로그 */
-  #log {
-    background: #050510; border: 1px solid var(--border); border-radius: 8px;
-    padding: 14px; font-family: 'Consolas', 'Courier New', monospace;
-    font-size: 0.82rem; line-height: 1.5; color: #c8c8e0;
-    height: 340px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
-  }
-
-  /* 결과물 */
-  .output-group { margin-bottom: 12px; }
-  .output-group summary {
-    cursor: pointer; font-weight: 600; font-size: 0.95rem;
-    padding: 6px 0; color: var(--accent);
-  }
-  .output-files { padding-left: 16px; margin-top: 4px; }
-  .output-files li { list-style: none; padding: 3px 0; font-size: 0.85rem; color: var(--dim); }
-
-  /* 스텝 인디케이터 */
-  .steps-bar { display: flex; gap: 4px; margin-bottom: 16px; }
-  .step-dot {
-    flex: 1; height: 6px; border-radius: 3px; background: var(--bg3); transition: background 0.5s;
-  }
-  .step-dot.active { background: var(--accent); }
-  .step-dot.done   { background: var(--green); }
-  .step-labels { display: flex; gap: 4px; margin-bottom: 8px; }
-  .step-label {
-    flex: 1; text-align: center; font-size: 0.7rem; color: var(--dim);
-  }
-  .step-label.active { color: var(--accent); font-weight: 600; }
-  .step-label.done { color: var(--green); }
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>edu_pipeline</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23e07a54' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M4 19.5A2.5 2.5 0 0 1 6.5 17H20'/><path d='M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z'/></svg>">
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
-<header>
-  <h1>edu_pipeline</h1>
-  <p>교육 영상 자동 처리 파이프라인 &mdash; STT / 번역 / 요약 / AI 더빙 / RAG 챗봇</p>
-</header>
+<!-- 모바일 사이드바 오버레이 -->
+<div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
 
-<div class="container">
-
-  <!-- 파일 선택 -->
-  <div class="card">
-    <div class="card-title">1. 영상 파일 선택</div>
-    <div class="file-list" id="fileList">
-      <span style="color:var(--dim)">파일 목록 로딩 중...</span>
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-top">
+    <div class="logo">
+      <div class="logo-mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+      </div>
+      <div class="logo-text">
+        <div class="logo-name">edu_pipeline</div>
+        <div class="logo-tag">AI 교육 처리 도구</div>
+      </div>
+      <!-- 새 대화: 로고 옆 아이콘 버튼 -->
+      <button class="new-chat-icon" onclick="newChat()" title="새 대화" aria-label="새 대화 시작">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+      </button>
     </div>
   </div>
 
-  <!-- 옵션 -->
-  <div class="card">
-    <div class="card-title">2. 옵션 설정</div>
-    <div class="opt-grid">
-      <div class="opt-group">
-        <label>원본 언어</label>
-        <select id="srcLang">
-          <option value="">자동 감지</option>
+  <div class="sidebar-scroll">
+    <!-- 학습된 소스 -->
+    <div class="sec-label-row">
+      <span class="sec-label" style="margin:0">학습된 소스</span>
+      <button class="add-source-btn" onclick="switchMainTab('source')" title="새 소스 추가">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+    </div>
+    <div id="col-list">
+      <div class="empty-hint">아직 처리된 파일이<br>없습니다.<br><br>소스를 추가하면<br>여기에 표시됩니다.</div>
+    </div>
+
+    <!-- RAG 임계값 슬라이더 -->
+    <div class="sec-label" style="margin-top:14px">검색 범위</div>
+    <div class="threshold-wrap">
+      <div class="threshold-header">
+        <span class="threshold-label" id="threshold-lbl">검색 범위</span>
+        <span class="threshold-val" id="threshold-val">보통</span>
+      </div>
+      <input type="range" class="threshold-slider"
+        min="0" max="4" step="1" value="2"
+        aria-labelledby="threshold-lbl" aria-valuetext="보통"
+        oninput="updateThreshold(this.value)">
+      <div class="threshold-ticks" id="threshold-ticks">
+        <span>정밀</span>
+        <span>엄격</span>
+        <span class="active">보통</span>
+        <span>넓게</span>
+        <span>매우<br>넓게</span>
+      </div>
+      <div class="threshold-hint" id="threshold-hint">균형 잡힌 검색 (기본값)</div>
+    </div>
+
+    <!-- 이전 대화 -->
+    <div class="sec-label" style="margin-top:14px">이전 대화</div>
+    <div id="history-list">
+      <div class="empty-hint" style="font-size:11.5px">이전 대화가<br>없습니다.</div>
+    </div>
+  </div>
+
+  <div class="sidebar-bottom">
+    <div class="model-pill">
+      <div class="model-dot"></div>
+      <span>Qwen3-8B · INT4</span>
+    </div>
+  </div>
+</aside>
+
+<!-- Main -->
+<div class="main">
+  <!-- Topbar -->
+  <div class="topbar">
+    <button class="hamburger" onclick="toggleSidebar()" title="메뉴" aria-label="사이드바 열기">
+      <span></span><span></span><span></span>
+    </button>
+    <span class="topbar-title">edu_pipeline</span>
+    <div class="topbar-divider"></div>
+    <span class="topbar-sub">영상 · 문서 질의응답</span>
+    <div class="topbar-right">
+      <div class="topbar-badge">RAG 챗봇</div>
+      <button class="icon-btn" id="dark-btn" onclick="toggleDark()" title="다크 모드 전환" aria-label="다크 모드 전환">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- 메인 탭 네비게이션 -->
+  <div class="main-tabs" role="tablist" aria-label="메인 탭">
+    <button class="main-tab active" id="main-tab-chat" onclick="switchMainTab('chat')" role="tab" aria-selected="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      채팅
+    </button>
+    <button class="main-tab" id="main-tab-library" onclick="switchMainTab('library')" role="tab" aria-selected="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      라이브러리
+    </button>
+    <button class="main-tab" id="main-tab-source" onclick="switchMainTab('source')" role="tab" aria-selected="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      소스 추가
+    </button>
+  </div>
+
+  <!-- 탭: 채팅 -->
+  <div class="tab-pane" id="tab-chat">
+    <div class="chat-area" id="chat-area" role="log" aria-live="polite" aria-label="대화 내용">
+      <div class="welcome" id="welcome">
+        <div class="welcome-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        </div>
+        <h2>소스를 추가하고 질문해 보세요</h2>
+        <p>상단 <strong>소스 추가</strong> 탭에서 영상이나 문서를 업로드하면<br>내용을 바탕으로 질문에 답해드립니다.</p>
+        <div class="hint-grid">
+          <div class="hint-card" role="button" tabindex="0" onclick="setInput('이 영상의 핵심 내용을 요약해줘')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();setInput('이 영상의 핵심 내용을 요약해줘')}">
+            <div class="hc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg></div>
+            <div class="hc-text">이 영상의 핵심 내용을 요약해줘</div>
+          </div>
+          <div class="hint-card" role="button" tabindex="0" onclick="setInput('어려운 개념을 쉽게 설명해줘')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();setInput('어려운 개념을 쉽게 설명해줘')}">
+            <div class="hc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="9" y1="18" x2="15" y2="18"/><line x1="10" y1="22" x2="14" y2="22"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg></div>
+            <div class="hc-text">어려운 개념을 쉽게 설명해줘</div>
+          </div>
+          <div class="hint-card" role="button" tabindex="0" onclick="setInput('중요한 키워드를 알려줘')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();setInput('중요한 키워드를 알려줘')}">
+            <div class="hc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="3.5"/><path d="M21 2l-9.6 9.6M15.5 7.5l2 2M17 6l2 2"/></svg></div>
+            <div class="hc-text">중요한 키워드를 알려줘</div>
+          </div>
+          <div class="hint-card" role="button" tabindex="0" onclick="setInput('퀴즈 문제를 만들어줘')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();setInput('퀴즈 문제를 만들어줘')}">
+            <div class="hc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+            <div class="hc-text">퀴즈 문제를 만들어줘</div>
+          </div>
+          <div class="hint-card" role="button" tabindex="0" onclick="setInput('실험 데이터의 전체적인 추세를 분석해줘')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();setInput('실험 데이터의 전체적인 추세를 분석해줘')}">
+            <div class="hc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+            <div class="hc-text">실험 데이터 추세 분석</div>
+          </div>
+          <div class="hint-card" role="button" tabindex="0" onclick="setInput('이 데이터를 바탕으로 다음 값을 예측해줘')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();setInput('이 데이터를 바탕으로 다음 값을 예측해줘')}">
+            <div class="hc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/><path d="M2 12h3M19 12h3M12 2v3M12 19v3"/></svg></div>
+            <div class="hc-text">다음 값 예측</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 채팅 입력 (순수 질문 전용) -->
+    <div class="input-wrap">
+
+      <!-- 소스 피커 (접었다 펼치기) -->
+      <div class="source-picker" id="source-picker" aria-label="대화할 소스 선택">
+        <div class="sp-header">
+          <span>대화할 소스 선택</span>
+          <button class="sp-close" onclick="toggleSourcePicker()" aria-label="소스 선택 닫기">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="sp-list" id="sp-list" role="listbox" aria-label="소스 목록" aria-multiselectable="true"></div>
+        <div class="sp-footer">
+          <button onclick="spSelectAll()">전체 선택</button>
+          <button onclick="spDeselectAll()">선택 해제</button>
+        </div>
+      </div>
+
+      <!-- 선택된 소스 칩 -->
+      <div class="source-bar" id="source-bar" style="display:none" aria-label="선택된 소스"></div>
+
+      <div class="options-bar">
+        <span class="opt-label">번역:</span>
+        <select class="opt-select" onchange="setLang(this.value)">
           <option value="ko">한국어</option>
-          <option value="en">영어</option>
-          <option value="vi">베트남어</option>
-          <option value="lo">라오스어</option>
+          <option value="en">English</option>
+          <option value="vi">Tiếng Việt</option>
+          <option value="lo">ລາວ</option>
         </select>
+        <label class="opt-toggle" title="TTS 더빙은 준비 중입니다" style="opacity:.45;cursor:not-allowed">
+          <div class="toggle-sw" id="tts-sw"></div>
+          <span>TTS 더빙</span>
+          <span style="font-size:10px;color:var(--muted);margin-left:2px">(준비 중)</span>
+        </label>
       </div>
-      <div class="opt-group">
-        <label>번역 언어</label>
-        <select id="tgtLang">
-          <option value="ko" selected>한국어</option>
-          <option value="en">영어</option>
-          <option value="vi">베트남어</option>
-          <option value="lo">라오스어</option>
-        </select>
+      <div class="input-box">
+        <div class="input-row">
+          <textarea id="msg-input" rows="1"
+            placeholder="소스 내용에 대해 질문하세요..."
+            onkeydown="onKey(event)" oninput="autoResize(this)"></textarea>
+          <button class="send-btn" id="send-btn" onclick="handleSend()" title="전송">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2" fill="currentColor" stroke="none"/></svg>
+          </button>
+        </div>
       </div>
-      <div class="opt-group">
-        <label>시작 단계</label>
-        <select id="startFrom">
-          <option value="1">처음부터</option>
-          <option value="2">2. STT부터</option>
-          <option value="3">3. LLM부터</option>
-          <option value="4">4. TTS부터</option>
-          <option value="5">5. 임베딩부터</option>
-        </select>
-      </div>
-    </div>
-    <div class="checks">
-      <label><input type="checkbox" id="forceTranslate"> 번역 강제 실행</label>
-      <label><input type="checkbox" id="skipTts"> TTS 건너뛰기</label>
-      <label><input type="checkbox" id="chat"> 완료 후 챗봇</label>
+      <div class="input-hint">Enter 전송 · Shift+Enter 줄바꿈</div>
     </div>
   </div>
 
-  <!-- 실행 -->
-  <div class="card">
-    <div style="display:flex; align-items:center; margin-bottom:14px;">
-      <div class="card-title" style="margin-bottom:0">3. 실행</div>
-      <span class="status status-idle" id="statusBadge">대기 중</span>
+  <!-- 탭: 라이브러리 -->
+  <div class="tab-pane" id="tab-library" style="display:none">
+    <div class="lib-header">
+      <div>
+        <div class="lib-header-title">라이브러리</div>
+        <div class="lib-header-sub">처리된 모든 소스를 확인하고 대화할 소스를 선택하세요</div>
+      </div>
+      <button class="lib-add-btn" onclick="switchMainTab('source')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        새 소스 추가
+      </button>
     </div>
-
-    <div class="step-labels" id="stepLabels">
-      <span class="step-label">오디오</span>
-      <span class="step-label">STT</span>
-      <span class="step-label">LLM</span>
-      <span class="step-label">TTS</span>
-      <span class="step-label">임베딩</span>
-      <span class="step-label">인덱싱</span>
+    <div class="lib-sel-bar" id="lib-sel-bar">
+      <span class="lib-sel-count" id="lib-sel-count">0개 선택됨</span>
+      <div class="lib-sel-actions">
+        <button onclick="libSelectAll()">전체 선택</button>
+        <button onclick="libDeselectAll()">선택 해제</button>
+        <button class="lib-chat-btn" id="lib-chat-btn" onclick="libStartChat()" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          선택한 소스로 대화
+        </button>
+      </div>
     </div>
-    <div class="steps-bar" id="stepsBar">
-      <div class="step-dot"></div>
-      <div class="step-dot"></div>
-      <div class="step-dot"></div>
-      <div class="step-dot"></div>
-      <div class="step-dot"></div>
-      <div class="step-dot"></div>
-    </div>
-
-    <div class="btn-row">
-      <button class="btn btn-run" id="btnRun" onclick="runPipeline()">실행</button>
-      <button class="btn btn-stop" id="btnStop" onclick="stopPipeline()" disabled>중지</button>
-    </div>
+    <div class="lib-grid" id="lib-grid"></div>
   </div>
 
-  <!-- 로그 -->
-  <div class="card">
-    <div class="card-title">실시간 로그</div>
-    <div id="log">파이프라인을 실행하면 여기에 로그가 표시됩니다.\n</div>
-  </div>
+  <!-- 탭: 소스 추가 -->
+  <div class="tab-pane" id="tab-source" style="display:none">
+    <div class="source-pane"
+         ondragover="sourceDragOver(event)" ondragleave="sourceDragLeave(event)" ondrop="sourceDrop(event)">
+      <div class="source-pane-header">
+        <div class="source-pane-title">새 소스 추가</div>
+        <div class="source-pane-desc">영상, 문서, YouTube, 텍스트를 분석해 질의응답에 활용합니다</div>
+      </div>
 
-  <!-- 결과물 -->
-  <div class="card">
-    <div class="card-title">결과물</div>
-    <div id="outputList"><span style="color:var(--dim)">파이프라인 완료 후 표시됩니다.</span></div>
+      <div class="source-drag-overlay" id="source-drag-overlay">파일을 여기에 드래그하세요</div>
+
+      <div class="asp-tabs">
+        <button class="asp-tab active" id="asp-tab-btn-file" onclick="switchAspTab('file', this)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          파일
+        </button>
+        <button class="asp-tab" id="asp-tab-btn-youtube" onclick="switchAspTab('youtube', this)">
+          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          YouTube
+        </button>
+        <button class="asp-tab" id="asp-tab-btn-text" onclick="switchAspTab('text', this)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
+          텍스트
+        </button>
+      </div>
+
+      <!-- 파일 탭 -->
+      <div class="asp-content" id="asp-tab-file">
+        <div class="asp-dropzone" id="asp-dropzone"
+             ondragover="aspDragOver(event)" ondragleave="aspDragLeave(event)" ondrop="aspDrop(event)"
+             onclick="document.getElementById('asp-file-input').click()">
+          <div class="asp-dz-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </div>
+          <div class="asp-dz-title">파일을 드래그하거나 클릭해서 선택</div>
+          <div class="asp-dz-hint">영상: mp4 · mkv · avi · mov · webm<br>문서: pdf · txt · md<br>실험 데이터: csv · xlsx · xls · json</div>
+        </div>
+        <div class="asp-file-preview" id="asp-file-preview" style="display:none">
+          <div class="asp-file-icon" id="asp-file-icon"></div>
+          <div class="asp-file-info">
+            <div class="asp-file-name" id="asp-file-name"></div>
+            <div class="asp-file-size" id="asp-file-size"></div>
+          </div>
+          <button class="asp-file-clear" onclick="aspClearFile()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <input type="file" id="asp-file-input"
+          accept=".mp4,.mkv,.avi,.mov,.webm,.flv,.wmv,.pdf,.txt,.md,.csv,.xlsx,.xls,.json"
+          style="display:none" onchange="aspFileChosen(this)">
+      </div>
+
+      <!-- YouTube 탭 -->
+      <div class="asp-content" id="asp-tab-youtube" style="display:none">
+        <div class="asp-yt-wrap">
+          <div class="asp-yt-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          </div>
+          <div style="flex:1">
+            <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px">YouTube URL 붙여넣기</div>
+            <input class="asp-url-input" id="asp-url-input" type="url"
+              placeholder="https://youtube.com/watch?v=...">
+          </div>
+        </div>
+      </div>
+
+      <!-- 텍스트 탭 -->
+      <div class="asp-content" id="asp-tab-text" style="display:none">
+        <textarea class="asp-textarea" id="asp-text-input"
+          placeholder="분석할 텍스트를 여기에 붙여넣으세요...&#10;&#10;강의 노트, 논문 초록, 기사 등 어떤 텍스트든 가능합니다."></textarea>
+      </div>
+
+      <!-- 옵션 -->
+      <div class="asp-options">
+        <span class="asp-opt-label">번역 언어</span>
+        <select class="opt-select" id="asp-lang-select">
+          <option value="ko">한국어</option>
+          <option value="en">English</option>
+          <option value="vi">Tiếng Việt</option>
+          <option value="lo">ລາວ</option>
+        </select>
+      </div>
+
+      <!-- 처리 시작 버튼 -->
+      <button class="asp-start-btn" id="asp-start-btn" onclick="startAspProcess()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        처리 시작
+      </button>
+
+      <!-- 진행 현황 -->
+      <div class="asp-progress" id="asp-progress" style="display:none">
+        <div class="asp-progress-title">처리 중...</div>
+        <div class="asp-steps" id="asp-steps">
+          <div class="asp-step" id="asp-step-0"><span class="asp-step-dot"></span><span>오디오 추출</span></div>
+          <div class="asp-step" id="asp-step-1"><span class="asp-step-dot"></span><span>STT 자막 추출</span></div>
+          <div class="asp-step" id="asp-step-2"><span class="asp-step-dot"></span><span>번역</span></div>
+          <div class="asp-step" id="asp-step-3"><span class="asp-step-dot"></span><span>임베딩</span></div>
+          <div class="asp-step" id="asp-step-4"><span class="asp-step-dot"></span><span>인덱싱 완료</span></div>
+        </div>
+
+        <!-- 실시간 로그 뷰어 -->
+        <div class="asp-log-wrap" id="asp-log-wrap">
+          <button class="asp-log-toggle" id="asp-log-toggle" onclick="toggleAspLog()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            로그 보기
+          </button>
+          <div class="asp-log-box" id="asp-log-box" style="display:none" aria-live="polite"></div>
+        </div>
+
+        <button class="asp-stop-btn" id="asp-stop-btn" onclick="stopAspProcess()">
+          <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+          중지
+        </button>
+      </div>
+
+      <!-- 처리 결과 -->
+      <div class="asp-result" id="asp-result" style="display:none">
+        <div class="asp-result-header">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          처리 완료
+        </div>
+        <div class="asp-dup-warn" id="asp-dup-warn" style="display:none">
+          <div class="asp-dup-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          </div>
+          <div class="asp-dup-text" id="asp-dup-text"></div>
+        </div>
+        <div class="asp-preview-card" id="asp-preview-card">
+          <div class="asp-preview-meta" id="asp-preview-meta"></div>
+          <div class="asp-preview-text" id="asp-preview-text"></div>
+        </div>
+        <button class="asp-chat-btn" id="asp-chat-btn" onclick="openChatFromAsp()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          이 소스로 대화 시작
+        </button>
+      </div>
+    </div>
   </div>
 </div>
 
-<script>
-let selectedFile = null;
-let currentJobId = null;
+<!-- 소스 정보 오버레이 -->
+<div class="info-panel-overlay" id="info-overlay" onclick="closeInfoPanel()"></div>
 
-// 파일 목록 로드
-async function loadFiles() {
-  const res = await fetch('/api/input-files');
-  const files = await res.json();
-  const el = document.getElementById('fileList');
-  if (files.length === 0) {
-    el.innerHTML = '<span style="color:var(--dim)">data/input 폴더에 영상 파일을 넣어주세요.</span>';
-    return;
-  }
-  el.innerHTML = '';
-  files.forEach(f => {
-    const item = document.createElement('div');
-    item.className = 'file-item';
-    item.textContent = f.name;
-    item.onclick = () => {
-      document.querySelectorAll('.file-item').forEach(x => x.classList.remove('selected'));
-      item.classList.add('selected');
-      selectedFile = f.path;
-    };
-    el.appendChild(item);
-  });
-}
+<!-- 소스 정보 패널 -->
+<div class="info-panel" id="info-panel" role="dialog" aria-modal="true" aria-labelledby="info-panel-title">
+  <div class="info-panel-header">
+    <div class="info-panel-title" id="info-panel-title">소스 정보</div>
+    <button class="info-panel-close" onclick="closeInfoPanel()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="info-panel-body">
+    <div class="info-section-label">AI 생성 요약</div>
+    <div class="info-summary-text" id="info-summary">불러오는 중...</div>
+    <div class="info-divider"></div>
+    <div class="info-section-label">결과 파일</div>
+    <div class="info-file-list" id="info-files"></div>
+    <div class="info-divider"></div>
+    <button id="info-delete-btn" style="
+      width:100%;padding:9px;border-radius:var(--r-s);
+      background:none;border:1px solid var(--border);
+      color:var(--red);font-size:13px;cursor:pointer;
+      transition:all .12s;font-family:inherit;
+      display:flex;align-items:center;justify-content:center;gap:6px;
+    " onmouseover="this.style.background='#fef2f2'" onmouseout="this.style.background='none'">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      컬렉션 삭제
+    </button>
+  </div>
+</div>
 
-// 스텝 진행 파싱
-const STEP_KEYWORDS = ['STEP 1', 'STEP 2', 'STEP 3', 'STEP 4', 'STEP 5', 'STEP 6'];
-function updateSteps(line) {
-  const dots = document.querySelectorAll('.step-dot');
-  const labels = document.querySelectorAll('.step-label');
-  STEP_KEYWORDS.forEach((kw, i) => {
-    if (line.includes(kw)) {
-      // 이전 스텝들을 done으로
-      for (let j = 0; j < i; j++) {
-        dots[j].className = 'step-dot done';
-        labels[j].className = 'step-label done';
-      }
-      dots[i].className = 'step-dot active';
-      labels[i].className = 'step-label active';
-    }
-  });
-  if (line.includes('파이프라인 완료')) {
-    dots.forEach(d => d.className = 'step-dot done');
-    labels.forEach(l => l.className = 'step-label done');
-  }
-}
+<!-- AI 로딩 배너 -->
+<div class="ai-loading-banner" id="ai-loading-banner" aria-live="polite" role="status">
+  <div class="alb-inner">
+    <span class="alb-spinner"></span>
+    <span class="alb-msg" id="alb-msg">AI 로딩 중...</span>
+  </div>
+</div>
 
-function resetSteps() {
-  document.querySelectorAll('.step-dot').forEach(d => d.className = 'step-dot');
-  document.querySelectorAll('.step-label').forEach(l => l.className = 'step-label');
-}
-
-function setStatus(status) {
-  const badge = document.getElementById('statusBadge');
-  const map = {
-    idle:    ['대기 중', 'status-idle'],
-    running: ['실행 중...', 'status-running'],
-    done:    ['완료!', 'status-done'],
-    error:   ['오류 발생', 'status-error'],
-    stopped: ['중지됨', 'status-stopped'],
-  };
-  const [text, cls] = map[status] || map.idle;
-  badge.textContent = text;
-  badge.className = 'status ' + cls;
-}
-
-// 파이프라인 실행
-async function runPipeline() {
-  if (!selectedFile) { alert('파일을 먼저 선택하세요.'); return; }
-
-  const logEl = document.getElementById('log');
-  logEl.textContent = '';
-  resetSteps();
-  setStatus('running');
-
-  document.getElementById('btnRun').disabled = true;
-  document.getElementById('btnStop').disabled = false;
-
-  const body = {
-    file: selectedFile,
-    lang: document.getElementById('srcLang').value || null,
-    targetLang: document.getElementById('tgtLang').value,
-    startFrom: parseInt(document.getElementById('startFrom').value),
-    forceTranslate: document.getElementById('forceTranslate').checked,
-    skipTts: document.getElementById('skipTts').checked,
-    chat: document.getElementById('chat').checked,
-  };
-
-  const res = await fetch('/api/run', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
-  const { jobId } = await res.json();
-  currentJobId = jobId;
-
-  // SSE 로그 스트리밍
-  const evtSource = new EventSource('/api/logs/' + jobId);
-  evtSource.onmessage = (e) => {
-    const data = JSON.parse(e.data);
-    if (data.type === 'log') {
-      logEl.textContent += data.msg;
-      logEl.scrollTop = logEl.scrollHeight;
-      updateSteps(data.msg);
-    } else if (data.type === 'done') {
-      evtSource.close();
-      setStatus(data.status);
-      document.getElementById('btnRun').disabled = false;
-      document.getElementById('btnStop').disabled = true;
-      loadOutputs();
-    } else if (data.type === 'error') {
-      evtSource.close();
-      setStatus('error');
-    }
-  };
-}
-
-// 중지
-async function stopPipeline() {
-  if (currentJobId) {
-    await fetch('/api/stop/' + currentJobId, { method: 'POST' });
-    setStatus('stopped');
-    document.getElementById('btnRun').disabled = false;
-    document.getElementById('btnStop').disabled = true;
-  }
-}
-
-// 결과물 로드
-async function loadOutputs() {
-  const res = await fetch('/api/output-files');
-  const outputs = await res.json();
-  const el = document.getElementById('outputList');
-  if (outputs.length === 0) {
-    el.innerHTML = '<span style="color:var(--dim)">결과물이 없습니다.</span>';
-    return;
-  }
-  el.innerHTML = '';
-  outputs.forEach(group => {
-    const details = document.createElement('details');
-    details.className = 'output-group';
-    details.open = true;
-    const summary = document.createElement('summary');
-    summary.textContent = group.name;
-    details.appendChild(summary);
-    const ul = document.createElement('ul');
-    ul.className = 'output-files';
-    group.files.forEach(f => {
-      const li = document.createElement('li');
-      li.textContent = f;
-      ul.appendChild(li);
-    });
-    details.appendChild(ul);
-    el.appendChild(details);
-  });
-}
-
-// 초기 로드
-loadFiles();
-loadOutputs();
-</script>
+<script src="/static/app.js"></script>
 </body>
 </html>
